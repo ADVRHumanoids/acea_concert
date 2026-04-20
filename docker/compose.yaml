@@ -13,6 +13,7 @@ services:
       - ~/.ssh:/home/user/.ssh  # ssh
       - ~/Qt:/home/user/Qt  # qt
       - ../src/concert_weld:/home/user/concert_ws/src/concert_weld:rw  # persistent weld workspace
+      - ./mount_files/config_file.yaml:/home/user/concert_ws/config_file.yaml:ro  # config file
     environment:
       - TERM=xterm-256color
       - DISPLAY
@@ -24,4 +25,3 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-  

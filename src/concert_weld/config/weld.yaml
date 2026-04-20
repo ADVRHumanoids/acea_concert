@@ -1,14 +1,14 @@
 solver:
-  type: ilqr
-  ipopt.linear_solver: ma57
+  type: ipopt
+  # ipopt.linear_solver: ma57
   ipopt.tol: 0.1
 #  ilqr.tol: 0.01
   ipopt.constr_viol_tol: 0.01
 #  ilqr.constr_viol_tol: 0.01
 #  ipopt.hessian_approximation: exact
   ipopt.print_level: 5
-  ipopt.suppress_all_output: 'yes'
-  ipopt.sb: 'yes'
+  # ipopt.suppress_all_output: 'yes'
+  # ipopt.sb: 'yes'
 #  ilqr.suppress_all_output: 'yes'
 #  ilqr.codegen_enabled: true
 #  ilqr.codegen_workdir: /tmp/soafwg
@@ -17,63 +17,42 @@ solver:
 #  ilqr.n_threads: 0
 #  print_time: 0
 
-#constraints:
-#  - rolling_contact_1
-#  - rolling_contact_2
-#  - rolling_contact_3
-#  - rolling_contact_4
+constraints:
+  - ee_pos
+  - ee_ori
+  - joint_limits
 
 costs:
-  - ee_force
-  - base_force
-  - ee_ori
-#  - ee_xy_force
-#  - ee_z_force
-#  - ee_ci
-#  - final_base_xy # only required if rolling contacts are active
+
+  - posture_arm
+  - posture_base
   - velocity_regularization
   - acceleration_regularization
-#  - posture_cart # only required if rolling contacts are active
-  - posture_arm
-  - posture_base # only required if rolling contacts are NOT active
+
 
 
 .define:
-    - &w_vel 0.3 #0.025
-    - &w_acc 1e-2
-    - &w_e_f 0. # starting with zero weight for ee task
-    - &w_e_fb 0.
-    - &w_ori 1.
-#    - &w_e_xy_f 1.
-#    - &w_e_z_f 1.
-#    - &w_e_ci 1.
-    # - &w_base_xy 1.
-    # - &w_postural_cart 0.01
-    - &w_postural_arm 0.1
-    - &wheel_radius 0.16
-    - &w_postural_base 0. # starting with zero weight for base task
 
-ee_force:
+    - &w_pos 1.0
+    - &w_ori 1.0
+    - &w_vel 0.3
+    - &w_acc 1e-2
+    - &w_postural_arm 0.1
+    - &w_postural_base 0.
+
+ee_pos:
   type: Cartesian
-  distal_link: weld_tool
+  distal_link: ee_F
   indices: [0, 1, 2]
   nodes: all
-  weight: *w_e_f
-
-base_force:
-  type: Cartesian
-  distal_link: base_link
-  indices: [3, 4, 5]
-  nodes: all
-  weight: *w_e_fb
+  weight: *w_pos
 
 ee_ori:
   type: Cartesian
-  distal_link: weld_tool
+  distal_link: ee_F
   indices: [3, 4, 5]
   nodes: all
   weight: *w_ori
-
 
 posture_base:
   type: Cartesian
@@ -86,7 +65,7 @@ posture_base:
 posture_arm:
   type: Postural
   weight: *w_postural_arm
-  indices: [8, 9, 10, 11, 12, 13] # wheels at the beginning of q
+  indices: [J1_E, J2_E, J1_F, J2_F, J3_F] # wheels at the beginning of q
 #  indices: [0, 1, 2, 3, 4, 5]
   nodes: all
 
@@ -95,22 +74,16 @@ velocity_regularization:
   type: Regularization
   variable_name: v
   nodes: all
-#  indices: [0, 2, 4, 6,
-#            8, 9, 10, 11, 12, 13]
   weight: *w_vel
 
 acceleration_regularization:
   type: Regularization
   variable_name: a
   nodes: all
-#  indices: [ 0, 2, 4, 6,
-#             8, 9, 10, 11, 12, 13 ]
-  weight: *w_acc # 0.01
+  weight: *w_acc
 
-#force_regularization:
-#  type: Regularization
-#  nodes: all
-#  weight:
-#    force: 1e-4 # todo <----- how to do? if there are more forces...
+# joint_limits:
+#   type: JointLimits
+#   nodes: all
 
 

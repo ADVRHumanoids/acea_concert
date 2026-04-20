@@ -1,0 +1,27 @@
+services:
+  dev:
+    build:
+      context: .
+    image: acea_concert:latest
+    stdin_open: true
+    tty: true 
+    privileged: true
+    entrypoint: /bin/bash
+    restart: always
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw  # x11
+      - ~/.ssh:/home/user/.ssh  # ssh
+      - ~/Qt:/home/user/Qt  # qt
+      - ../src/concert_weld:/home/user/concert_ws/src/concert_weld:rw  # persistent weld workspace
+    environment:
+      - TERM=xterm-256color
+      - DISPLAY
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+  

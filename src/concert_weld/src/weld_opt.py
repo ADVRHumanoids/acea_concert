@@ -48,7 +48,7 @@ length_pipe = 5.0
 center_pipe = [1.5, 0.0, 0.25]
 radius_pipe = 0.5
 angle_weld_start = 1/3 *np.pi
-angle_weld_end = np.pi # np.pi/3 #2 * np.pi
+angle_weld_end = 1/3 *np.pi # np.pi/3 #2 * np.pi
 
 # Generate trajectory and get initial desired pose
 position, orientation = generate_circular_trajectory(
@@ -90,13 +90,13 @@ ti.setTaskFromYaml(horizon_config)
 
 # Print initial FK vs desired for user awareness (after model and ti are defined)
 fk_ee_pos = kin_dyn.fk('ee_F')(q=model.q0)['ee_pos'][:, 0]
-fk_ee_rot = R.from_matrix((kin_dyn.fk('ee_F')(q=model.q0)['ee_rot'].full())).as_euler('xyz')
+fk_ee_rot = R.from_matrix((kin_dyn.fk('ee_F')(q=model.q0)['ee_rot'].full())).as_quat()
 desired_pos = position[:, 0]
 desired_rot = orientation[:, 0]
 
-print(f"[INFO] Desired initial ee_F pos: {desired_pos}, rot (rpy): {desired_rot}")
-print(f"[INFO] Actual initial ee_F pos: {fk_ee_pos}, rot (rpy): {fk_ee_rot}")
-print(f"[INFO] Initial position error: {np.linalg.norm(fk_ee_pos - desired_pos):.4f} m, orientation error: {np.linalg.norm(fk_ee_rot - desired_rot):.4f} rad")
+
+print(f"[INFO] Desired initial ee_F pos: {desired_pos}, rot (quat): {desired_rot}")
+print(f"[INFO] Actual initial ee_F pos: {fk_ee_pos}, rot (quat): {fk_ee_rot}")
 
 # Kill any existing rviz_markers.py processes before starting a new one
 import subprocess
@@ -113,7 +113,7 @@ position_aug = np.full((7, ns + 1), 0.0)
 position_aug[:3, :] = position
 
 orientation_aug = np.full((7, ns + 1), 0.0)
-orientation_aug[:3, :] = orientation
+orientation_aug[3:, :] = orientation
 
 pos_task_name = 'ee_pos'
 ori_task_name = 'ee_ori'

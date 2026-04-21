@@ -18,11 +18,11 @@ def generate_circular_trajectory(ns, center, radius, angle_start=0.0, angle_end=
 
     Returns:
         positions: (3, ns+1) numpy array
-        orientations: (3, ns+1) numpy array of RPY (xyz)
+        orientations: (4, ns+1) numpy array of quaternions (x, y, z, w)
     """
     center = np.asarray(center, dtype=float)
     positions = np.zeros((3, ns + 1))
-    orientations = np.zeros((3, ns + 1))
+    orientations = np.zeros((4, ns + 1))  # Quaternion: x, y, z, w
 
     for k in range(ns + 1):
         angle = angle_start + (angle_end - angle_start) * k / ns
@@ -41,6 +41,6 @@ def generate_circular_trajectory(ns, center, radius, angle_start=0.0, angle_end=
         x_tool = np.cross(y_tool, z_tool)
         rot_matrix = np.column_stack([x_tool, y_tool, z_tool])
 
-        orientations[:, k] = R.from_matrix(rot_matrix).as_euler('xyz')
+        orientations[:, k] = R.from_matrix(rot_matrix).as_quat()  # Quaternion (x, y, z, w)
 
     return positions, orientations

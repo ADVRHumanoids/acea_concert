@@ -4,6 +4,7 @@ FROM hhcmhub/xbot2-noble-dev:latest
 RUN mkdir -p ~/concert_ws && cd ~/concert_ws && forest init
 
 # source the workspace
+RUN echo "source /opt/xbot/setup.sh" >> ~/.bashrc
 RUN echo "source ~/concert_ws/setup.bash" >> ~/.bashrc
 
 RUN sudo apt-get update && sudo apt-get install -y swig
@@ -13,11 +14,11 @@ WORKDIR /home/user/concert_ws
 # add recipes
 RUN forest add-recipes git@github.com:ADVRHumanoids/multidof_recipes.git --clone-protocol https --tag acea
 
-# install horizon
+RUN forest grow moveit_compute_default_collisions --clone-protocol https -j7
+
 RUN forest grow horizon --clone-protocol https -j7
 
 RUN forest grow concert_description --clone-protocol https -j7
 
-COPY docker/patch_container.sh /tmp/patch_container.sh
-COPY docker/mount_files/config_file.yaml /tmp/config_file.yaml
-RUN bash /tmp/patch_container.sh
+
+RUN mkdir -p ~/patch

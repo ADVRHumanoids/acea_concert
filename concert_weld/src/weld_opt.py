@@ -11,6 +11,7 @@ from geometry_msgs.msg import Vector3
 from scipy.spatial.transform import Rotation as R
 from horizon.ros import replay_trajectory
 
+from collision_checker import CollisionChecker
 import casadi as cs
 import numpy as np
 
@@ -27,11 +28,29 @@ dt = T / ns
 prb = Problem(ns, receding=True, casadi_type=cs.SX)
 prb.setDt(dt)
 
+# ========================================================
+# ========================================================
+
 PATH_TO_CONCERT_WS = Path("/home/user/concert_ws")
 modular_prismatic = PATH_TO_CONCERT_WS/"src"/"concert_description"/"concert_examples"/"src"/"concert_prismatic.py"
 horizon_config = PATH_TO_CONCERT_WS/"src"/"concert_weld"/"config"/"weld.yaml"
 
 urdf = subprocess.check_output(["python3", str(modular_prismatic), "-o", "urdf"], text=True)
+srdf = subprocess.check_output(["python3", str(modular_prismatic), "-o", "srdf"], text=True)
+
+with open('/tmp/concert_weld.urdf', 'w') as f:
+    f.write(urdf)
+
+with open('/tmp/concert_weld.srdf', 'w') as f:
+    f.write(srdf)
+
+subprocess.run(f'moveit_compute_default_collisions --urdf_path /tmp/concert_weld.urdf --srdf_path /tmp/concert_weld.srdf', shell=True, check=True)
+
+with open('/tmp/concert_weld.srdf', 'r') as f:
+    srdf = f.read()
+
+# ========================================================
+# ========================================================
 
 # Launch robot_state_publisher in background with the URDF
 rsp_process = subprocess.Popen(
@@ -58,6 +77,9 @@ position, orientation = generate_circular_trajectory(
     angle_start=angle_weld_start,
     angle_end=angle_weld_end,
 )
+
+coll_checker = CollisionChecker(urdf, srdf)
+coll_checker.add_pipe('weld_pipe', radius_pipe, length_pipe, center_pipe)
 
 # Set base_init so base is under the first trajectory point
 base_init = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])  # Y (no lateral offset)
@@ -137,7 +159,6 @@ tmp_q0[3:7] = base_quat  # Set quaternion part
 
 ti.model.q0 = tmp_q0
 
-ti.model.q[1].setBounds(tmp_q0[1], tmp_q0[1])
 ti.model.q[2].setBounds(tmp_q0[2], tmp_q0[2])
 ti.model.q[3:7].setBounds(tmp_q0[3:7], tmp_q0[3:7])
 
@@ -145,12 +166,9 @@ ti.model.q[3:7].setBounds(tmp_q0[3:7], tmp_q0[3:7])
 
 
 base_pos_xy = prb.createSingleVariable('base_pos_xy', 2)
-# base_yaw = prb.createSingleVariable('base_yaw', 1)
 
-prb.createConstraint('base_pos_xy_constraint', model.q[:2] - base_pos_xy)
+prb.createConstraint('base_pos_xy_constraint', model.q[:1] - base_pos_xy)
 
-ti.model.q.setInitialGuess(ti.model.q0)
-ti.model.v.setInitialGuess(ti.model.v0)
 
 ti.model.q[7:].setBounds(kin_dyn.q_min()[7:], kin_dyn.q_max()[7:])
 
@@ -161,10 +179,33 @@ ti.model.q[7:].setBounds(kin_dyn.q_min()[7:], kin_dyn.q_max()[7:])
 # prb.createResidual('max_vel', 1e2 * utils.utils.barrier(vel_lims[7:] - model.v[7:]))
 # prb.createResidual('min_vel', 1e1 * utils.utils.barrier1(-1 * vel_lims[7:] - model.v[7:]))
 
+
+
 ti.finalize()
 
-ti.bootstrap()
-solution = ti.solution
+is_colliding = True
+
+while is_colliding == True:
+
+    random_pose_xy = np.random.uniform(low=-2, high=0, size=1)
+    initial_guess_q = ti.model.q0.copy()
+    initial_guess_q[:1] = random_pose_xy  # Randomize base XY position in initial guess
+    print(f"Initial guess for base XY position: {initial_guess_q[:1]}")
+    ti.model.q.setInitialGuess(initial_guess_q)
+    ti.model.v.setInitialGuess(ti.model.v0)
+    
+    ti.bootstrap()
+
+    solution = ti.solution
+
+    is_colliding = False  # Assume no collision initially
+    for node in range(ns + 1):
+        print(f"Node {node}:")
+        is_colliding_node, pairs = coll_checker.compute_collisions(solution['q'][:, node])
+        print("Colliding pairs:", pairs)
+        if is_colliding_node:
+            is_colliding = True
+        print("-----")
 
 contact_list_repl = list(model.cmap.keys())
 repl = replay_trajectory.replay_trajectory(dt, model.kd.joint_names(), solution['q'],

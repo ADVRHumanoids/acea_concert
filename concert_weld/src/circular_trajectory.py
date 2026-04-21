@@ -32,9 +32,9 @@ def generate_circular_trajectory(ns, center, radius, angle_start=0.0, angle_end=
         positions[1, k] = center[1]
         positions[2, k] = center[2] + radius * np.sin(angle)
 
-        # Orientation: tool z-axis points radially inward toward center
+        # Orientation: tool z-axis points radially inward from center
         normal = np.array([-np.cos(angle), 0.0, -np.sin(angle)])
-        y_axis = np.array([0.0, 1.0, 0.0])
+        y_axis = np.array([0.0, -1.0, 0.0])
 
         z_tool = normal
         y_tool = y_axis

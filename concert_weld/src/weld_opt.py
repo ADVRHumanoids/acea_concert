@@ -48,7 +48,7 @@ length_pipe = 5.0
 center_pipe = [1.5, 0.0, 0.25]
 radius_pipe = 0.5
 angle_weld_start = 1/3 *np.pi
-angle_weld_end = 1/3 *np.pi # np.pi/3 #2 * np.pi
+angle_weld_end = np.pi # np.pi/3 #2 * np.pi
 
 # Generate trajectory and get initial desired pose
 position, orientation = generate_circular_trajectory(
@@ -141,14 +141,18 @@ ti.model.q[1].setBounds(tmp_q0[1], tmp_q0[1])
 ti.model.q[2].setBounds(tmp_q0[2], tmp_q0[2])
 ti.model.q[3:7].setBounds(tmp_q0[3:7], tmp_q0[3:7])
 
-base_pos_x = prb.createSingleVariable('base_pos_x', 1)
+# Create optimization variable for base yaw (rotation about Z)
 
-prb.createConstraint('base_pos_x_constraint', model.q[0] - base_pos_x)
+
+base_pos_xy = prb.createSingleVariable('base_pos_xy', 2)
+# base_yaw = prb.createSingleVariable('base_yaw', 1)
+
+prb.createConstraint('base_pos_xy_constraint', model.q[:2] - base_pos_xy)
 
 ti.model.q.setInitialGuess(ti.model.q0)
 ti.model.v.setInitialGuess(ti.model.v0)
 
-ti.model.q[3:].setBounds(kin_dyn.q_min()[3:], kin_dyn.q_max()[3:])
+ti.model.q[7:].setBounds(kin_dyn.q_min()[7:], kin_dyn.q_max()[7:])
 
 # prb.createResidual('max_q', 1e1 * utils.utils.barrier(kin_dyn.q_max()[7:] - model.q[7:]))
 # prb.createResidual('min_q', 1e1 * utils.utils.barrier1(kin_dyn.q_min()[7:] - model.q[7:]))
@@ -161,11 +165,6 @@ ti.finalize()
 
 ti.bootstrap()
 solution = ti.solution
-
-
-base_pos_x_opt = solution['base_pos_x']
-print(f"Optimized base x position: {base_pos_x_opt}")
-
 
 contact_list_repl = list(model.cmap.keys())
 repl = replay_trajectory.replay_trajectory(dt, model.kd.joint_names(), solution['q'],

@@ -17,3 +17,7 @@ RUN forest add-recipes git@github.com:ADVRHumanoids/multidof_recipes.git --clone
 RUN forest grow horizon --clone-protocol https -j7
 
 RUN forest grow concert_description --clone-protocol https -j7
+
+COPY docker/patch_container.sh /tmp/patch_container.sh
+COPY docker/mount_files/config_file.yaml /tmp/config_file.yaml
+RUN bash /tmp/patch_container.sh

@@ -2,6 +2,7 @@ solver:
   type: ipopt
   # ipopt.linear_solver: ma57
   ipopt.tol: 0.1
+  ipopt.max_iter: 500
 #  ilqr.tol: 0.01
   ipopt.constr_viol_tol: 0.01
 #  ilqr.constr_viol_tol: 0.01
@@ -20,14 +21,17 @@ solver:
 constraints:
   - ee_pos
   - ee_ori
-  - joint_limits
 
 costs:
 
-  - posture_arm
-  - posture_base
+  # - posture_arm
+  # - posture_base
   - velocity_regularization
-  - acceleration_regularization
+  # - acceleration_regularization
+  # - acceleration_regularization_base
+  - acceleration_regularization_prismatic_yaw
+  - acceleration_regularization_prismatic_z
+  - acceleration_regularization_arm
 
 
 
@@ -37,7 +41,11 @@ costs:
     - &w_ori 1.0
     - &w_vel 0.3
     - &w_acc 1e-2
-    - &w_postural_arm 0.1
+    - &w_acc_base 1e-2
+    - &w_acc_prism_yaw 0.5
+    - &w_acc_prism_z 0.5
+    - &w_acc_arm 1e-2
+    - &w_postural_arm 0.
     - &w_postural_base 0.
 
 ee_pos:
@@ -69,7 +77,6 @@ posture_arm:
 #  indices: [0, 1, 2, 3, 4, 5]
   nodes: all
 
-# todo: wrong, as the order COUNTS. If I add the contacts after the joint regularization, they wont get considered.
 velocity_regularization:
   type: Regularization
   variable_name: v
@@ -81,6 +88,35 @@ acceleration_regularization:
   variable_name: a
   nodes: all
   weight: *w_acc
+
+acceleration_regularization_base:
+  type: Regularization
+  variable_name: a
+  indices: [0, 1, 2, 3, 4, 5]
+  nodes: all
+  weight: *w_acc_base
+
+acceleration_regularization_prismatic_yaw:
+  type: Regularization
+  variable_name: a
+  indices: [6]
+  nodes: all
+  weight: *w_acc_prism_yaw
+
+acceleration_regularization_prismatic_z:
+  type: Regularization
+  variable_name: a
+  indices: [7]
+  nodes: all
+  weight: *w_acc_prism_z
+
+acceleration_regularization_arm:
+  type: Regularization
+  variable_name: a
+  indices: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+  nodes: all
+  weight: *w_acc_arm
+
 
 # joint_limits:
 #   type: JointLimits

@@ -22,7 +22,7 @@ import subprocess
 Initialize Horizon problem
 '''
 ns = 30
-T = 1.5
+T = 5.0
 dt = T / ns
 
 prb = Problem(ns, receding=True, casadi_type=cs.SX)
@@ -62,24 +62,73 @@ print(f"joint names: {kin_dyn.joint_names()}")
 
 # Apply circular trajectory for ee_F
 from circular_trajectory import generate_circular_trajectory
+footprint_robot_x = 1.2
+footprint_robot_y = 0.7
 
 length_pipe = 5.0
-center_pipe = [1.5, 0.0, 0.25]
+pos_center_pipe = [1.5, 0.0, 0.75]
+orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
 radius_pipe = 0.5
-angle_weld_start = 1/3 *np.pi
-angle_weld_end = np.pi # np.pi/3 #2 * np.pi
+angle_weld_start = 1.5/3 *np.pi
+angle_weld_end = 3/2 * np.pi # np.pi/3 #2 * np.pi
+
+margin_x = 0. # Some margin around the pipe
+bound_initial_pos_x_low = -0.5
+bound_initial_pos_x_high = pos_center_pipe[0] - radius_pipe - footprint_robot_x/2 - margin_x 
+
+bound_initial_pos_y_low = -1.0 + footprint_robot_y/2
+bound_initial_pos_y_high = 1.0 - footprint_robot_y/2
+
+# Draw rectangle in RViz covering all possible random XY positions
+center_x = (bound_initial_pos_x_low + bound_initial_pos_x_high) / 2.0
+center_y = (bound_initial_pos_y_low + bound_initial_pos_y_high) / 2.0
+size_x = abs(bound_initial_pos_x_high - bound_initial_pos_x_low)
+size_y = abs(bound_initial_pos_y_high - bound_initial_pos_y_low)
+
+
+# Kill any existing rviz_markers.py processes before starting a new one
+import subprocess
+subprocess.run("pkill -f rviz_markers.py", shell=True)
+subprocess.run("pkill -f rviz_rectangle.py", shell=True)
+
+# Draw pipe cylinder in RViz (as background subprocess)
+rviz_marker_pipe = subprocess.Popen([
+    "python3", str(PATH_TO_CONCERT_WS / "src" / "concert_weld" / "src" / "rviz_markers.py"),
+    str(pos_center_pipe[0]), str(pos_center_pipe[1]), str(pos_center_pipe[2]),
+    str(radius_pipe), str(length_pipe),
+    str(orientation_pipe[0]), str(orientation_pipe[1]), str(orientation_pipe[2]), str(orientation_pipe[3])
+])
+
+# Draw pipe cylinder in RViz (as background subprocess)
+rviz_marker_footprint = subprocess.Popen([
+    "python3", str(PATH_TO_CONCERT_WS / "src" / "concert_weld" / "src" / "rviz_rectangle.py"),
+    'footprint_robot',
+    str(0.0), str(0.0),  # center_x, center_y
+    str(footprint_robot_x), str(footprint_robot_y),
+    'base_link',
+    '0.0', '1.0', '0.0', '0.3'  # Green with some transparency
+])
+
+# Draw rectangle in RViz at the random pose
+subprocess.Popen([
+    "python3", str(PATH_TO_CONCERT_WS / "src" / "concert_weld" / "src" / "rviz_rectangle.py"),
+    'initial_zone',
+    str(center_x), str(center_y),
+    str(size_x), str(size_y),
+    'world'
+])
 
 # Generate trajectory and get initial desired pose
 position, orientation = generate_circular_trajectory(
     ns,
-    center=center_pipe,
+    center=pos_center_pipe,
     radius=radius_pipe,
     angle_start=angle_weld_start,
     angle_end=angle_weld_end,
 )
 
 coll_checker = CollisionChecker(urdf, srdf)
-coll_checker.add_pipe('weld_pipe', radius_pipe, length_pipe, center_pipe)
+coll_checker.add_pipe('weld_pipe', radius_pipe, length_pipe, pos_center_pipe, orientation_pipe)
 
 # Set base_init so base is under the first trajectory point
 base_init = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])  # Y (no lateral offset)
@@ -120,17 +169,6 @@ desired_rot = orientation[:, 0]
 print(f"[INFO] Desired initial ee_F pos: {desired_pos}, rot (quat): {desired_rot}")
 print(f"[INFO] Actual initial ee_F pos: {fk_ee_pos}, rot (quat): {fk_ee_rot}")
 
-# Kill any existing rviz_markers.py processes before starting a new one
-import subprocess
-subprocess.run("pkill -f rviz_markers.py", shell=True)
-
-# Draw pipe cylinder in RViz (as background subprocess)
-rviz_marker_proc = subprocess.Popen([
-    "python3", str(PATH_TO_CONCERT_WS / "src" / "concert_weld" / "src" / "rviz_markers.py"),
-    str(center_pipe[0]), str(center_pipe[1]), str(center_pipe[2]),
-    str(radius_pipe), str(length_pipe)
-])
-
 position_aug = np.full((7, ns + 1), 0.0)
 position_aug[:3, :] = position
 
@@ -146,12 +184,11 @@ ee_ori_task = ti.getTask(ori_task_name)
 ee_pos_task.setRef(position_aug)
 ee_ori_task.setRef(orientation_aug)
 
-print(f"circular trajectory applied: center={center_pipe}, radius={radius_pipe}")
+print(f"circular trajectory applied: center={pos_center_pipe}, radius={radius_pipe}")
 print(f"angle range: [{angle_weld_start}, {angle_weld_end}] rad, steps: {ns + 1}")
 
 # Set base pose in XZ plane and pitch-only orientation (pitch=0)
 tmp_q0 = ti.model.q0.copy()
-tmp_q0[1] = 0.0  # Y 
 tmp_q0[2] = 0.0  # Z (set to desired height if needed)
 pitch_angle = 0.0  # Set to desired pitch in radians
 base_quat = R.from_euler('y', pitch_angle).as_quat()  # [x, y, z, w]
@@ -159,59 +196,60 @@ tmp_q0[3:7] = base_quat  # Set quaternion part
 
 ti.model.q0 = tmp_q0
 
+# Set bounds to fix the base pose (except for XY which will be randomized)
 ti.model.q[2].setBounds(tmp_q0[2], tmp_q0[2])
 ti.model.q[3:7].setBounds(tmp_q0[3:7], tmp_q0[3:7])
 
-# Create optimization variable for base yaw (rotation about Z)
-
-
+# Create optimization variable for base XY
 base_pos_xy = prb.createSingleVariable('base_pos_xy', 2)
+prb.createConstraint('base_pos_xy_constraint', model.q[:2] - base_pos_xy)
 
-prb.createConstraint('base_pos_xy_constraint', model.q[:1] - base_pos_xy)
+ti.model.q[0].setBounds(bound_initial_pos_x_low, bound_initial_pos_x_high) 
+ti.model.q[1].setBounds(bound_initial_pos_y_low, bound_initial_pos_y_high)
 
-
+# joint limits
 ti.model.q[7:].setBounds(kin_dyn.q_min()[7:], kin_dyn.q_max()[7:])
 
-# prb.createResidual('max_q', 1e1 * utils.utils.barrier(kin_dyn.q_max()[7:] - model.q[7:]))
-# prb.createResidual('min_q', 1e1 * utils.utils.barrier1(kin_dyn.q_min()[7:] - model.q[7:]))
-
-# vel_lims = model.kd.velocityLimits()
-# prb.createResidual('max_vel', 1e2 * utils.utils.barrier(vel_lims[7:] - model.v[7:]))
-# prb.createResidual('min_vel', 1e1 * utils.utils.barrier1(-1 * vel_lims[7:] - model.v[7:]))
-
-
+ti.model.v.setInitialGuess(ti.model.v0)
 
 ti.finalize()
 
 is_colliding = True
+solution_found = False
 
-while is_colliding == True:
+while is_colliding == True or solution_found == False:
 
-    random_pose_xy = np.random.uniform(low=-2, high=0, size=1)
+    random_pose_x = np.random.uniform(low=bound_initial_pos_x_low, high=bound_initial_pos_x_high, size=1)
+    random_pose_y = np.random.uniform(low=bound_initial_pos_y_low, high=bound_initial_pos_y_high, size=1)
+
     initial_guess_q = ti.model.q0.copy()
-    initial_guess_q[:1] = random_pose_xy  # Randomize base XY position in initial guess
-    print(f"Initial guess for base XY position: {initial_guess_q[:1]}")
+    initial_guess_q[0] = random_pose_x  # Randomize base X position in initial guess
+    initial_guess_q[1] = random_pose_y  # Randomize base Y position in initial guess
+
     ti.model.q.setInitialGuess(initial_guess_q)
-    ti.model.v.setInitialGuess(ti.model.v0)
-    
-    ti.bootstrap()
+    ti.model.q[0].setBounds(random_pose_x, random_pose_x)  # Update bounds for base X
+    ti.model.q[1].setBounds(random_pose_y, random_pose_y)  # Update bounds for base Y
+
+    solution_found = ti.bootstrap()
 
     solution = ti.solution
 
     is_colliding = False  # Assume no collision initially
     for node in range(ns + 1):
-        print(f"Node {node}:")
+        # print(f"Node {node}:")
         is_colliding_node, pairs = coll_checker.compute_collisions(solution['q'][:, node])
-        print("Colliding pairs:", pairs)
+        # print("Colliding pairs:", pairs)
         if is_colliding_node:
             is_colliding = True
-        print("-----")
+        
+        # print("-----")
+
 
 contact_list_repl = list(model.cmap.keys())
 repl = replay_trajectory.replay_trajectory(dt, model.kd.joint_names(), solution['q'],
-                                           {k: None for k in model.fmap.keys()},
-                                           model.kd_frame, model.kd,
-                                           trajectory_markers=contact_list_repl,
-                                           future_trajectory_markers={'ee_F': 'world'})
+                                        {k: None for k in model.fmap.keys()},
+                                        model.kd_frame, model.kd,
+                                        trajectory_markers=contact_list_repl,
+                                        future_trajectory_markers={'ee_F': 'world'})
 
 repl.replay()

@@ -20,5 +20,4 @@ RUN forest grow horizon --clone-protocol https -j7
 
 RUN forest grow concert_description --clone-protocol https -j7
 
-
 RUN mkdir -p ~/patch

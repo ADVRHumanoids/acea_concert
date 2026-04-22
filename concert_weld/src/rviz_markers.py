@@ -15,18 +15,16 @@ def main():
     cx, cy, cz = float(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3])
     radius = float(sys.argv[4])
     length = float(sys.argv[5]) if len(sys.argv) > 5 else 0.5
+    # Orientation as quaternion (qx, qy, qz, qw)
+    qx = float(sys.argv[6])
+    qy = float(sys.argv[7])
+    qz = float(sys.argv[8])
+    qw = float(sys.argv[9])
+
 
     rclpy.init()
     node = rclpy.create_node('pipe_marker_publisher')
     pub = node.create_publisher(Marker, '/visualization_marker', 10)
-
-    # First, publish a DELETE action to clear any previous marker with this ID
-    delete_marker = Marker()
-    delete_marker.header.frame_id = 'world'
-    delete_marker.ns = 'weld_pipe'
-    delete_marker.id = 0
-    delete_marker.action = Marker.DELETE
-    pub.publish(delete_marker)
     time.sleep(0.2)  # Give RViz time to process the delete
 
     marker = Marker()
@@ -40,11 +38,10 @@ def main():
     marker.pose.position.y = cy
     marker.pose.position.z = cz
 
-    # Rotate 90° around Y so cylinder axis is along X
-    marker.pose.orientation.x = 0.7071068
-    marker.pose.orientation.y = 0.0
-    marker.pose.orientation.z = 0.0
-    marker.pose.orientation.w = 0.7071068
+    marker.pose.orientation.x = qx
+    marker.pose.orientation.y = qy
+    marker.pose.orientation.z = qz
+    marker.pose.orientation.w = qw
 
     marker.scale.x = radius * 2.0
     marker.scale.y = radius * 2.0
@@ -53,7 +50,7 @@ def main():
     marker.color.r = 1.0
     marker.color.g = 0.5
     marker.color.b = 0.0
-    marker.color.a = 0.4
+    marker.color.a = 0.9
 
     marker.lifetime.sec = 0
 

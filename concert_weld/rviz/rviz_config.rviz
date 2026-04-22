@@ -6,8 +6,12 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
+        - /Grid1
         - /RobotModel1
-        - /Marker1
+        - /TF1/Frames1
+        - /pipe_marker1
+        - /initial_zone_marker1
+        - /foorprint_marker1
       Splitter Ratio: 0.5
     Tree Height: 752
   - Class: rviz_common/Selection
@@ -44,10 +48,10 @@ Visualization Manager:
       Offset:
         X: 0
         Y: 0
-        Z: 0
+        Z: -0.75
       Plane: XY
       Plane Cell Count: 10
-      Reference Frame: <Fixed Frame>
+      Reference Frame: world
       Value: true
     - Alpha: 1
       Class: rviz_default_plugins/RobotModel
@@ -193,6 +197,21 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
+        J4_F_stator:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        J5_F_stator:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        J6_F_stator:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
         J_wheel_A_stator:
           Alpha: 1
           Show Axes: false
@@ -239,11 +258,6 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
-        L_1_link_1_F:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
-          Value: true
         L_2_E:
           Alpha: 1
           Show Axes: false
@@ -260,6 +274,26 @@ Visualization Manager:
           Show Trail: false
           Value: true
         L_3_F:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        L_4_F:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        L_4_link_1_F:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        L_5_F:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        L_6_F:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -417,159 +451,171 @@ Visualization Manager:
       Filter (whitelist): ""
       Frame Timeout: 15
       Frames:
-        All Enabled: true
+        All Enabled: false
         D435i_camera_back_bottom_screw_frame:
-          Value: true
+          Value: false
         D435i_camera_back_color_frame:
-          Value: true
+          Value: false
         D435i_camera_back_color_optical_frame:
-          Value: true
+          Value: false
         D435i_camera_back_depth_frame:
-          Value: true
+          Value: false
         D435i_camera_back_depth_optical_frame:
-          Value: true
+          Value: false
         D435i_camera_back_left_ir_frame:
-          Value: true
+          Value: false
         D435i_camera_back_left_ir_optical_frame:
-          Value: true
+          Value: false
         D435i_camera_back_link:
-          Value: true
+          Value: false
         D435i_camera_back_right_ir_frame:
-          Value: true
+          Value: false
         D435i_camera_back_right_ir_optical_frame:
-          Value: true
+          Value: false
         D435i_camera_front_bottom_screw_frame:
-          Value: true
+          Value: false
         D435i_camera_front_color_frame:
-          Value: true
+          Value: false
         D435i_camera_front_color_optical_frame:
-          Value: true
+          Value: false
         D435i_camera_front_depth_frame:
-          Value: true
+          Value: false
         D435i_camera_front_depth_optical_frame:
-          Value: true
+          Value: false
         D435i_camera_front_left_ir_frame:
-          Value: true
+          Value: false
         D435i_camera_front_left_ir_optical_frame:
-          Value: true
+          Value: false
         D435i_camera_front_link:
-          Value: true
+          Value: false
         D435i_camera_front_right_ir_frame:
-          Value: true
+          Value: false
         D435i_camera_front_right_ir_optical_frame:
-          Value: true
+          Value: false
         J1_A_stator:
-          Value: true
+          Value: false
         J1_B_stator:
-          Value: true
+          Value: false
         J1_C_stator:
-          Value: true
+          Value: false
         J1_D_stator:
-          Value: true
+          Value: false
         J1_E_stator:
-          Value: true
+          Value: false
         J1_F_stator:
-          Value: true
+          Value: false
         J2_E_stator:
-          Value: true
+          Value: false
         J2_F_stator:
-          Value: true
+          Value: false
         J3_F_stator:
-          Value: true
+          Value: false
+        J4_F_stator:
+          Value: false
+        J5_F_stator:
+          Value: false
+        J6_F_stator:
+          Value: false
         J_wheel_A_stator:
-          Value: true
+          Value: false
         J_wheel_B_stator:
-          Value: true
+          Value: false
         J_wheel_C_stator:
-          Value: true
+          Value: false
         J_wheel_D_stator:
-          Value: true
+          Value: false
         L_1_A:
-          Value: true
+          Value: false
         L_1_B:
-          Value: true
+          Value: false
         L_1_C:
-          Value: true
+          Value: false
         L_1_D:
-          Value: true
+          Value: false
         L_1_E:
-          Value: true
+          Value: false
         L_1_F:
-          Value: true
-        L_1_link_1_F:
-          Value: true
+          Value: false
         L_2_E:
-          Value: true
+          Value: false
         L_2_F:
-          Value: true
+          Value: false
         L_2_link_1_F:
-          Value: true
+          Value: false
         L_3_F:
-          Value: true
+          Value: false
+        L_4_F:
+          Value: false
+        L_4_link_1_F:
+          Value: false
+        L_5_F:
+          Value: false
+        L_6_F:
+          Value: false
         T265_camera_left_pose_frame:
-          Value: true
+          Value: false
         T265_camera_right_pose_frame:
-          Value: true
+          Value: false
         VLP16_lidar_back_base_link:
-          Value: true
+          Value: false
         VLP16_lidar_front_base_link:
-          Value: true
+          Value: false
         base_link:
           Value: true
         base_link_projected:
-          Value: true
+          Value: false
         dalsa_camera_left:
-          Value: true
+          Value: false
         dalsa_camera_right:
-          Value: true
+          Value: false
         ee_F:
           Value: true
         end_effector_F:
-          Value: true
+          Value: false
         hub_prismatic_cart:
-          Value: true
+          Value: false
         mobile_base:
-          Value: true
+          Value: false
         ultrasound_fl_lat:
-          Value: true
+          Value: false
         ultrasound_fl_lat_base_link:
-          Value: true
+          Value: false
         ultrasound_fl_sag:
-          Value: true
+          Value: false
         ultrasound_fl_sag_base_link:
-          Value: true
+          Value: false
         ultrasound_fr_lat:
-          Value: true
+          Value: false
         ultrasound_fr_lat_base_link:
-          Value: true
+          Value: false
         ultrasound_fr_sag:
-          Value: true
+          Value: false
         ultrasound_fr_sag_base_link:
-          Value: true
+          Value: false
         ultrasound_rl_lat:
-          Value: true
+          Value: false
         ultrasound_rl_lat_base_link:
-          Value: true
+          Value: false
         ultrasound_rl_sag:
-          Value: true
+          Value: false
         ultrasound_rl_sag_base_link:
-          Value: true
+          Value: false
         ultrasound_rr_lat:
-          Value: true
+          Value: false
         ultrasound_rr_lat_base_link:
-          Value: true
+          Value: false
         ultrasound_rr_sag:
-          Value: true
+          Value: false
         ultrasound_rr_sag_base_link:
-          Value: true
+          Value: false
         wheel_A:
-          Value: true
+          Value: false
         wheel_B:
-          Value: true
+          Value: false
         wheel_C:
-          Value: true
+          Value: false
         wheel_D:
-          Value: true
+          Value: false
         world:
           Value: true
       Marker Scale: 1
@@ -642,15 +688,21 @@ Visualization Manager:
                       hub_prismatic_cart:
                         J1_F_stator:
                           L_1_F:
-                            L_1_link_1_F:
-                              J2_F_stator:
-                                L_2_F:
-                                  L_2_link_1_F:
-                                    J3_F_stator:
-                                      L_3_F:
-                                        end_effector_F:
-                                          ee_F:
-                                            {}
+                            J2_F_stator:
+                              L_2_F:
+                                L_2_link_1_F:
+                                  J3_F_stator:
+                                    L_3_F:
+                                      J4_F_stator:
+                                        L_4_F:
+                                          L_4_link_1_F:
+                                            J5_F_stator:
+                                              L_5_F:
+                                                J6_F_stator:
+                                                  L_6_F:
+                                                    end_effector_F:
+                                                      ee_F:
+                                                        {}
               T265_camera_left_pose_frame:
                 {}
               T265_camera_right_pose_frame:
@@ -687,7 +739,7 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: true
-      Name: Marker
+      Name: pipe_marker
       Namespaces:
         weld_pipe: true
       Topic:
@@ -697,6 +749,32 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /visualization_marker
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: initial_zone_marker
+      Namespaces:
+        initial_zone: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /initial_zone
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: foorprint_marker
+      Namespaces:
+        footprint_robot: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /footprint_robot
       Value: true
   Enabled: true
   Global Options:
@@ -744,33 +822,33 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 5.277319431304932
+      Distance: 3.156304121017456
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.6926283240318298
-        Y: -0.10789968818426132
-        Z: 0.7046349048614502
+        X: -0.008321833796799183
+        Y: -0.4829089343547821
+        Z: 0.4053860902786255
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: -0.004601945169270039
+      Pitch: -0.36520248651504517
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 1.505399465560913
+      Yaw: 1.7854007482528687
     Saved: ~
 Window Geometry:
   Displays:
-    collapsed: false
+    collapsed: true
   Height: 1043
-  Hide Left Dock: false
-  Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd00000004000000000000015600000379fc0200000008fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003b00000379000000c700fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261000000010000010f00000379fc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073010000003b00000379000000a000fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e10000019700000003000007800000003efc0100000002fb0000000800540069006d00650100000000000007800000025300fffffffb0000000800540069006d006501000000000000045000000000000000000000050f0000037900000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Hide Left Dock: true
+  Hide Right Dock: true
+  QMainWindow State: 000000ff00000000fd00000004000000000000015600000379fc0200000008fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073000000003b00000379000000c700fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261000000010000010f00000379fc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073000000003b00000379000000a000fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e10000019700000003000007800000003efc0100000002fb0000000800540069006d00650100000000000007800000025300fffffffb0000000800540069006d00650100000000000004500000000000000000000007800000037900000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Selection:
     collapsed: false
   Time:
@@ -778,7 +856,7 @@ Window Geometry:
   Tool Properties:
     collapsed: false
   Views:
-    collapsed: false
+    collapsed: true
   Width: 1920
   X: 1920
   Y: 0

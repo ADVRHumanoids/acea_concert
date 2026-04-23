@@ -1,12 +1,14 @@
 from horizon.problem import Problem
 from horizon.rhc.model_description import FullModelInverseDynamics
 from horizon.rhc.taskInterface import TaskInterface
-from horizon.utils import utils
+from horizon.utils import mat_storer
+from horizon.utils import kin_dyn as kin_dyn_utils
+import os
+
 from pathlib import Path
 import casadi_kin_dyn.py3casadi_kin_dyn as casadi_kin_dyn
 from scipy.spatial.transform import Rotation
-# from xbot_interface import config_options as co
-# from xbot_interface import xbot_interface as xbot
+
 from geometry_msgs.msg import Vector3
 from scipy.spatial.transform import Rotation as R
 from horizon.ros import replay_trajectory
@@ -22,7 +24,7 @@ import subprocess
 Initialize Horizon problem
 '''
 ns = 30
-T = 5.0
+T = 2.0
 dt = T / ns
 
 prb = Problem(ns, receding=True, casadi_type=cs.SX)
@@ -32,6 +34,7 @@ prb.setDt(dt)
 # ========================================================
 
 PATH_TO_CONCERT_WS = Path("/home/user/concert_ws")
+PATH_TO_CONCERT_WELD = PATH_TO_CONCERT_WS/"src"/"concert_weld"
 modular_prismatic = PATH_TO_CONCERT_WS/"src"/"concert_description"/"concert_examples"/"src"/"concert_prismatic.py"
 horizon_config = PATH_TO_CONCERT_WS/"src"/"concert_weld"/"config"/"weld.yaml"
 
@@ -58,7 +61,7 @@ rsp_process = subprocess.Popen(
 )
 
 kin_dyn = casadi_kin_dyn.CasadiKinDyn(urdf)
-print(f"joint names: {kin_dyn.joint_names()}")
+# print(f"joint names: {kin_dyn.joint_names()}")
 
 # Apply circular trajectory for ee_F
 from circular_trajectory import generate_circular_trajectory
@@ -69,8 +72,9 @@ length_pipe = 5.0
 pos_center_pipe = [1.5, 0.0, 0.75]
 orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
 radius_pipe = 0.5
-angle_weld_start = 1.5/3 *np.pi
-angle_weld_end = 3/2 * np.pi # np.pi/3 #2 * np.pi
+angle_weld_start = 1/2 *np.pi
+angle_weld_end = np.pi # 3/2 * np.pi #2 * np.pi
+# angle_weld_end = np.pi # np.pi/3 #2 * np.pi
 
 margin_x = 0. # Some margin around the pipe
 bound_initial_pos_x_low = -0.5
@@ -85,11 +89,25 @@ center_y = (bound_initial_pos_y_low + bound_initial_pos_y_high) / 2.0
 size_x = abs(bound_initial_pos_x_high - bound_initial_pos_x_low)
 size_y = abs(bound_initial_pos_y_high - bound_initial_pos_y_low)
 
+# Generate trajectory and get initial desired pose
+position, orientation = generate_circular_trajectory(
+    ns,
+    center=pos_center_pipe,
+    radius=radius_pipe,
+    angle_start=angle_weld_start,
+    angle_end=angle_weld_end,
+)
+
+coll_checker = CollisionChecker(urdf, srdf)
+coll_checker.add_pipe('weld_pipe', radius_pipe, length_pipe, pos_center_pipe, orientation_pipe)
+
+# ========================================================
 
 # Kill any existing rviz_markers.py processes before starting a new one
 import subprocess
 subprocess.run("pkill -f rviz_markers.py", shell=True)
 subprocess.run("pkill -f rviz_rectangle.py", shell=True)
+subprocess.run("pkill -f rviz_line_marker.py", shell=True)
 
 # Draw pipe cylinder in RViz (as background subprocess)
 rviz_marker_pipe = subprocess.Popen([
@@ -118,17 +136,16 @@ subprocess.Popen([
     'world'
 ])
 
-# Generate trajectory and get initial desired pose
-position, orientation = generate_circular_trajectory(
-    ns,
-    center=pos_center_pipe,
-    radius=radius_pipe,
-    angle_start=angle_weld_start,
-    angle_end=angle_weld_end,
-)
+# Draw a line along the circular trajectory in RViz
+line_points = []
+for k in range(position.shape[1]):
+    line_points.extend([position[0, k], position[1, k], position[2, k]])
 
-coll_checker = CollisionChecker(urdf, srdf)
-coll_checker.add_pipe('weld_pipe', radius_pipe, length_pipe, pos_center_pipe, orientation_pipe)
+subprocess.Popen([
+    "python3", str(PATH_TO_CONCERT_WS / "src" / "concert_weld" / "src" / "rviz_line_marker.py"),
+    'weld_trajectory',
+    *[str(x) for x in line_points]
+])
 
 # Set base_init so base is under the first trajectory point
 base_init = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])  # Y (no lateral offset)
@@ -159,15 +176,15 @@ model = FullModelInverseDynamics(problem=prb,
 ti = TaskInterface(prb=prb, model=model)
 ti.setTaskFromYaml(horizon_config)
 
+# for cost_name, cost in prb.getCosts().items():
+#     print(f"Cost '{cost_name}' nodes: {cost.getNodes()}")
+
+# exit()
 # Print initial FK vs desired for user awareness (after model and ti are defined)
 fk_ee_pos = kin_dyn.fk('ee_F')(q=model.q0)['ee_pos'][:, 0]
 fk_ee_rot = R.from_matrix((kin_dyn.fk('ee_F')(q=model.q0)['ee_rot'].full())).as_quat()
-desired_pos = position[:, 0]
-desired_rot = orientation[:, 0]
 
-
-print(f"[INFO] Desired initial ee_F pos: {desired_pos}, rot (quat): {desired_rot}")
-print(f"[INFO] Actual initial ee_F pos: {fk_ee_pos}, rot (quat): {fk_ee_rot}")
+print(f"[INFO] Initial ee_F pos: {fk_ee_pos}, rot (quat): {fk_ee_rot}")
 
 position_aug = np.full((7, ns + 1), 0.0)
 position_aug[:3, :] = position
@@ -204,18 +221,25 @@ ti.model.q[3:7].setBounds(tmp_q0[3:7], tmp_q0[3:7])
 base_pos_xy = prb.createSingleVariable('base_pos_xy', 2)
 prb.createConstraint('base_pos_xy_constraint', model.q[:2] - base_pos_xy)
 
-ti.model.q[0].setBounds(bound_initial_pos_x_low, bound_initial_pos_x_high) 
-ti.model.q[1].setBounds(bound_initial_pos_y_low, bound_initial_pos_y_high)
+# ti.model.q[0].setBounds(bound_initial_pos_x_low, bound_initial_pos_x_high) 
+# ti.model.q[1].setBounds(bound_initial_pos_y_low, bound_initial_pos_y_high)
 
 # joint limits
 ti.model.q[7:].setBounds(kin_dyn.q_min()[7:], kin_dyn.q_max()[7:])
 
 ti.model.v.setInitialGuess(ti.model.v0)
 
+ti.model.v.setBounds(np.zeros_like(ti.model.v0), np.zeros_like(ti.model.v0), nodes=0)
+ti.model.v.setBounds(np.zeros_like(ti.model.v0), np.zeros_like(ti.model.v0), nodes=ns)
+
 ti.finalize()
 
 is_colliding = True
 solution_found = False
+
+# id_fn = kin_dyn.InverseDynamics(kin_dyn) # force_reference_frame = cas_kin_dyn.CasadiKinDyn.LOCAL
+# tau = id_fn.call(solution['q'], solution['v'], solution['a'])
+# self.prb.createConstraint('dynamics', self.tau[:6], nodes=nodes)
 
 while is_colliding == True or solution_found == False:
 
@@ -234,7 +258,7 @@ while is_colliding == True or solution_found == False:
 
     solution = ti.solution
 
-    is_colliding = False  # Assume no collision initially
+    is_colliding = False
     for node in range(ns + 1):
         # print(f"Node {node}:")
         is_colliding_node, pairs = coll_checker.compute_collisions(solution['q'][:, node])
@@ -245,6 +269,35 @@ while is_colliding == True or solution_found == False:
         # print("-----")
 
 
+id_fn = kin_dyn_utils.InverseDynamics(kin_dyn) # force_reference_frame = cas_kin_dyn.CasadiKinDyn.LOCAL
+# Compute tau for all nodes
+tau = np.zeros_like(solution['a'])
+for node in range(ns - 1):
+    # tau_node = id_fn.call(solution['q'][:, node], solution['v'][:, node], solution['a'][:, node])
+    tau_node = id_fn.call(solution['q'][:, node], 0., 0.)
+    tau_node = np.asarray(tau_node).flatten()
+    tau[:, node] = tau_node
+
+
+name_file = "weld_concert"
+if not os.path.exists(f"{PATH_TO_CONCERT_WELD}/mat_files"):
+    os.mkdir(f"{PATH_TO_CONCERT_WELD}/mat_files")
+ms = mat_storer.matStorer(f"{PATH_TO_CONCERT_WELD}/mat_files/" + name_file + '.mat')
+info_dict = dict(
+    n_nodes=prb.getNNodes(),
+    dt=prb.getDt(),
+    pos_center_pipe=pos_center_pipe,
+    orientation_pipe=orientation_pipe,
+    radius_pipe=radius_pipe,
+    angle_weld_start=angle_weld_start,
+    angle_weld_end=angle_weld_end,
+    tau=tau,
+    joint_names=model.kd.joint_names(),
+    initial_robot_pose=solution['q'][:, 0], 
+)
+
+ms.store({**solution, **info_dict})
+
 contact_list_repl = list(model.cmap.keys())
 repl = replay_trajectory.replay_trajectory(dt, model.kd.joint_names(), solution['q'],
                                         {k: None for k in model.fmap.keys()},
@@ -253,3 +306,5 @@ repl = replay_trajectory.replay_trajectory(dt, model.kd.joint_names(), solution[
                                         future_trajectory_markers={'ee_F': 'world'})
 
 repl.replay()
+
+

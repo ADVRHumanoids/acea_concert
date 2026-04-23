@@ -2,14 +2,15 @@ solver:
   type: ipopt
   # ipopt.linear_solver: ma57
   ipopt.tol: 0.1
-  ipopt.max_iter: 500
-#  ilqr.tol: 0.01
+  ipopt.max_iter: 200
+  # ipopt.hessian_approximation: exact
   ipopt.constr_viol_tol: 0.01
-#  ilqr.constr_viol_tol: 0.01
-#  ipopt.hessian_approximation: exact
-  ipopt.print_level: 5
+  # ipopt.print_level: 5
   # ipopt.suppress_all_output: 'yes'
   # ipopt.sb: 'yes'
+
+#  ilqr.constr_viol_tol: 0.01
+#  ilqr.tol: 0.01
 #  ilqr.suppress_all_output: 'yes'
 #  ilqr.codegen_enabled: true
 #  ilqr.codegen_workdir: /tmp/soafwg
@@ -33,49 +34,47 @@ costs:
   - acceleration_regularization_prismatic_z
   - acceleration_regularization_arm
 
-
-
 .define:
 
     - &w_pos 1.0
     - &w_ori 1.0
-    - &w_vel 0.3
+    - &w_vel 0.1
     - &w_acc 1e-2
-    - &w_acc_base 1e-2
-    - &w_acc_prism_yaw 0.5
-    - &w_acc_prism_z 0.5
-    - &w_acc_arm 1e-2
-    - &w_postural_arm 0.
-    - &w_postural_base 0.
+    - &w_acc_prism_yaw 1.0
+    - &w_acc_prism_z 1.0
+    - &w_acc_arm 0.1
+    # - &w_acc_base 1e-2
+    # - &w_postural_arm 0.1
+    # - &w_postural_base 0.
 
 ee_pos:
   type: Cartesian
   distal_link: ee_F
   indices: [0, 1, 2]
   nodes: all
-  weight: *w_pos
+  # weight: *w_pos
 
 ee_ori:
   type: Cartesian
   distal_link: ee_F
   indices: [3, 4, 5]
   nodes: all
-  weight: *w_ori
+  # weight: *w_ori
 
-posture_base:
-  type: Cartesian
-  distal_link: base_link
-  nodes: all
-  indices: [0, 1, 2, 3, 4, 5]
-  cartesian_type: velocity
-  weight: *w_postural_base
+# posture_base:
+#   type: Cartesian
+#   distal_link: base_link
+#   nodes: all
+#   indices: [0, 1, 2, 3, 4, 5]
+#   cartesian_type: velocity
+#   weight: *w_postural_base
 
-posture_arm:
-  type: Postural
-  weight: *w_postural_arm
-  indices: [J1_E, J2_E, J1_F, J2_F, J3_F] # wheels at the beginning of q
-#  indices: [0, 1, 2, 3, 4, 5]
-  nodes: all
+# posture_arm:
+#   type: Postural
+#   weight: *w_postural_arm
+#   indices: [J1_E, J2_E, J1_F, J2_F, J3_F] # wheels at the beginning of q
+# #  indices: [0, 1, 2, 3, 4, 5]
+#   nodes: all
 
 velocity_regularization:
   type: Regularization
@@ -89,12 +88,12 @@ acceleration_regularization:
   nodes: all
   weight: *w_acc
 
-acceleration_regularization_base:
-  type: Regularization
-  variable_name: a
-  indices: [0, 1, 2, 3, 4, 5]
-  nodes: all
-  weight: *w_acc_base
+# acceleration_regularization_base:
+#   type: Regularization
+#   variable_name: a
+#   indices: [0, 1, 2, 3, 4, 5]
+#   nodes: all
+#   weight: *w_acc_base
 
 acceleration_regularization_prismatic_yaw:
   type: Regularization

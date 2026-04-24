@@ -38,10 +38,10 @@ costs:
 
     - &w_pos 1.0
     - &w_ori 1.0
-    - &w_vel 0.1
+    - &w_vel 2.0
     - &w_acc 1e-2
     - &w_acc_prism_yaw 1.0
-    - &w_acc_prism_z 1.0
+    - &w_acc_prism_z 5.0
     - &w_acc_arm 0.1
     # - &w_acc_base 1e-2
     # - &w_postural_arm 0.1

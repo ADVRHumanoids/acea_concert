@@ -3,14 +3,15 @@ from horizon.rhc.model_description import FullModelInverseDynamics
 from horizon.rhc.taskInterface import TaskInterface
 from horizon.utils import mat_storer
 from horizon.utils import kin_dyn as kin_dyn_utils
-import os
+
+import os, sys
 
 from pathlib import Path
 import casadi_kin_dyn.py3casadi_kin_dyn as casadi_kin_dyn
-from scipy.spatial.transform import Rotation
 
 from geometry_msgs.msg import Vector3
 from scipy.spatial.transform import Rotation as R
+from scipy.io import loadmat
 from horizon.ros import replay_trajectory
 
 from collision_checker import CollisionChecker
@@ -72,16 +73,20 @@ length_pipe = 5.0
 pos_center_pipe = [1.5, 0.0, 0.75]
 orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
 radius_pipe = 0.5
-angle_weld_start = 1/2 *np.pi
-angle_weld_end = np.pi # 3/2 * np.pi #2 * np.pi
+# angle_weld_start = 1/2 *np.pi
+# angle_weld_end = np.pi # 3/2 * np.pi #2 * np.pi
+
+angle_weld_start = 1/2 * np.pi
+angle_weld_end = 3/2 * np.pi # 3/2 * np.pi #2 * np.pi
+
 # angle_weld_end = np.pi # np.pi/3 #2 * np.pi
 
 margin_x = 0. # Some margin around the pipe
 bound_initial_pos_x_low = -0.5
 bound_initial_pos_x_high = pos_center_pipe[0] - radius_pipe - footprint_robot_x/2 - margin_x 
 
-bound_initial_pos_y_low = -1.0 + footprint_robot_y/2
-bound_initial_pos_y_high = 1.0 - footprint_robot_y/2
+bound_initial_pos_y_low = -1.5 + footprint_robot_y/2
+bound_initial_pos_y_high = 1.5 - footprint_robot_y/2
 
 # Draw rectangle in RViz covering all possible random XY positions
 center_x = (bound_initial_pos_x_low + bound_initial_pos_x_high) / 2.0
@@ -229,22 +234,46 @@ ti.model.q[7:].setBounds(kin_dyn.q_min()[7:], kin_dyn.q_max()[7:])
 
 ti.model.v.setInitialGuess(ti.model.v0)
 
-ti.model.v.setBounds(np.zeros_like(ti.model.v0), np.zeros_like(ti.model.v0), nodes=0)
-ti.model.v.setBounds(np.zeros_like(ti.model.v0), np.zeros_like(ti.model.v0), nodes=ns)
+# start with zero velocity
+# ti.model.v.setBounds(np.zeros_like(ti.model.v0), np.zeros_like(ti.model.v0), nodes=0)
+# ti.model.v.setBounds(np.zeros_like(ti.model.v0), np.zeros_like(ti.model.v0), nodes=ns)
+
+# Constrain linear axis (q[8]) to only move in one direction
+cnsrt_vel_linear_guide = prb.createConstraint('linear_axis_positive_velocity', -model.v[15])
+cnsrt_vel_linear_guide.setBounds(0, np.inf)
+
+# constant_vel_linear_guide = prb.createIntermediateConstraint('linear_axis_positive_velocity', model.a[14])
+# constant_vel_linear_guide.setBounds(0., 0.)
+
+# constant_vel_yaw_guide = prb.createIntermediateConstraint('yaw_axis_constant_velocity', model.a[15])
+# constant_vel_yaw_guide.setBounds(0., 0.)
+
+# id_fn = kin_dyn_utils.InverseDynamics(kin_dyn) # force_reference_frame = cas_kin_dyn.CasadiKinDyn.LOCAL
+# tau_weight_min = 1e1
+# tau = id_fn.call(model.q, 0., 0.)
+# prb.createResidual('tau_cost', tau_weight_min * tau)
 
 ti.finalize()
 
 is_colliding = True
 solution_found = False
 
-# id_fn = kin_dyn.InverseDynamics(kin_dyn) # force_reference_frame = cas_kin_dyn.CasadiKinDyn.LOCAL
-# tau = id_fn.call(solution['q'], solution['v'], solution['a'])
-# self.prb.createConstraint('dynamics', self.tau[:6], nodes=nodes)
+# =================================================================================
+# matfile = os.path.join(os.path.dirname(__file__), '../mat_files/weld_concert_very_good.mat')
+# if not os.path.exists(matfile):
+#     print(f"File not found: {matfile}")
+#     sys.exit(1)
+
+# data = loadmat(matfile)
+# q_init = data.get('q')  # Use the first column of q as the initial guess
+# =================================================================================
 
 while is_colliding == True or solution_found == False:
 
     random_pose_x = np.random.uniform(low=bound_initial_pos_x_low, high=bound_initial_pos_x_high, size=1)
     random_pose_y = np.random.uniform(low=bound_initial_pos_y_low, high=bound_initial_pos_y_high, size=1)
+
+    
 
     initial_guess_q = ti.model.q0.copy()
     initial_guess_q[0] = random_pose_x  # Randomize base X position in initial guess
@@ -298,13 +327,15 @@ info_dict = dict(
 
 ms.store({**solution, **info_dict})
 
+q_forward = solution['q']
+q_backward = np.flip(q_forward, axis=1)
+q_cycle = np.concatenate([q_forward, q_backward], axis=1)
+
 contact_list_repl = list(model.cmap.keys())
-repl = replay_trajectory.replay_trajectory(dt, model.kd.joint_names(), solution['q'],
+repl = replay_trajectory.replay_trajectory(dt, model.kd.joint_names(), q_cycle,
                                         {k: None for k in model.fmap.keys()},
                                         model.kd_frame, model.kd,
                                         trajectory_markers=contact_list_repl,
                                         future_trajectory_markers={'ee_F': 'world'})
 
 repl.replay()
-
-

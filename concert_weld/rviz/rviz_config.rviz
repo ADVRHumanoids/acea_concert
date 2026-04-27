@@ -9,6 +9,7 @@ Panels:
         - /Grid1
         - /RobotModel1
         - /TF1/Frames1
+        - /initial_zone_marker1
       Splitter Ratio: 0.5
     Tree Height: 752
   - Class: rviz_common/Selection
@@ -745,7 +746,7 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /visualization_marker
+        Value: /weld_pipe
       Value: true
     - Class: rviz_default_plugins/Marker
       Enabled: true
@@ -785,6 +786,19 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /weld_trajectory
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Enabled: true
+      Name: initial_points
+      Namespaces:
+        points: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /initial_points
       Value: true
   Enabled: true
   Global Options:
@@ -832,25 +846,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 4.113012790679932
+      Distance: 5.415936470031738
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: -0.008321833796799183
-        Y: -0.4829089343547821
-        Z: 0.4053860902786255
+        X: 0.33206456899642944
+        Y: -0.4948212802410126
+        Z: 0.8014896512031555
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.579797625541687
+      Pitch: 0.9097980260848999
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 1.3753845691680908
+      Yaw: 1.8003873825073242
     Saved: ~
 Window Geometry:
   Displays:

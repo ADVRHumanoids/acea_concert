@@ -54,12 +54,13 @@ with open('/tmp/concert_weld.srdf', 'r') as f:
     srdf = f.read()
 
 # ========================================================
-# ========================================================
 
 # Launch robot_state_publisher in background with the URDF
 rsp_process = subprocess.Popen(
     ["ros2", "run", "robot_state_publisher", "robot_state_publisher", "--ros-args", "-p", f"robot_description:={urdf}"],
 )
+
+# ========================================================
 
 kin_dyn = casadi_kin_dyn.CasadiKinDyn(urdf)
 # print(f"joint names: {kin_dyn.joint_names()}")
@@ -79,10 +80,8 @@ radius_pipe = 0.5
 angle_weld_start = 1/2 * np.pi
 angle_weld_end = 3/2 * np.pi # 3/2 * np.pi #2 * np.pi
 
-# angle_weld_end = np.pi # np.pi/3 #2 * np.pi
-
 margin_x = 0. # Some margin around the pipe
-bound_initial_pos_x_low = -0.5
+bound_initial_pos_x_low = -0.5 # 0 is good!
 bound_initial_pos_x_high = pos_center_pipe[0] - radius_pipe - footprint_robot_x/2 - margin_x 
 
 bound_initial_pos_y_low = -1.5 + footprint_robot_y/2
@@ -103,55 +102,32 @@ position, orientation = generate_circular_trajectory(
     angle_end=angle_weld_end,
 )
 
+# =================================================================================
+# Initialize collision checker
 coll_checker = CollisionChecker(urdf, srdf)
 coll_checker.add_pipe('weld_pipe', radius_pipe, length_pipe, pos_center_pipe, orientation_pipe)
+# =================================================================================
 
-# ========================================================
+# Initialize RViz scene with pipe, footprint, and trajectory markers
+from init_scene import InitScene
+init_scene = InitScene(
+    path_ws=PATH_TO_CONCERT_WS,
+    pos_center_pipe=pos_center_pipe,
+    radius_pipe=radius_pipe,
+    length_pipe=length_pipe,
+    orientation_pipe=orientation_pipe,
+    footprint_robot_x=footprint_robot_x,
+    footprint_robot_y=footprint_robot_y,
+    center_x=center_x,
+    center_y=center_y,
+    size_x=size_x,
+    size_y=size_y,
+    position=position
+)
+init_scene.kill_existing_markers()
+init_scene.launch_scene()
 
-# Kill any existing rviz_markers.py processes before starting a new one
-import subprocess
-subprocess.run("pkill -f rviz_markers.py", shell=True)
-subprocess.run("pkill -f rviz_rectangle.py", shell=True)
-subprocess.run("pkill -f rviz_line_marker.py", shell=True)
-
-# Draw pipe cylinder in RViz (as background subprocess)
-rviz_marker_pipe = subprocess.Popen([
-    "python3", str(PATH_TO_CONCERT_WS / "src" / "concert_weld" / "src" / "rviz_markers.py"),
-    str(pos_center_pipe[0]), str(pos_center_pipe[1]), str(pos_center_pipe[2]),
-    str(radius_pipe), str(length_pipe),
-    str(orientation_pipe[0]), str(orientation_pipe[1]), str(orientation_pipe[2]), str(orientation_pipe[3])
-])
-
-# Draw pipe cylinder in RViz (as background subprocess)
-rviz_marker_footprint = subprocess.Popen([
-    "python3", str(PATH_TO_CONCERT_WS / "src" / "concert_weld" / "src" / "rviz_rectangle.py"),
-    'footprint_robot',
-    str(0.0), str(0.0),  # center_x, center_y
-    str(footprint_robot_x), str(footprint_robot_y),
-    'base_link',
-    '0.0', '1.0', '0.0', '0.3'  # Green with some transparency
-])
-
-# Draw rectangle in RViz at the random pose
-subprocess.Popen([
-    "python3", str(PATH_TO_CONCERT_WS / "src" / "concert_weld" / "src" / "rviz_rectangle.py"),
-    'initial_zone',
-    str(center_x), str(center_y),
-    str(size_x), str(size_y),
-    'world'
-])
-
-# Draw a line along the circular trajectory in RViz
-line_points = []
-for k in range(position.shape[1]):
-    line_points.extend([position[0, k], position[1, k], position[2, k]])
-
-subprocess.Popen([
-    "python3", str(PATH_TO_CONCERT_WS / "src" / "concert_weld" / "src" / "rviz_line_marker.py"),
-    'weld_trajectory',
-    *[str(x) for x in line_points]
-])
-
+# =================================================================================
 # Set base_init so base is under the first trajectory point
 base_init = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])  # Y (no lateral offset)
 
@@ -181,10 +157,6 @@ model = FullModelInverseDynamics(problem=prb,
 ti = TaskInterface(prb=prb, model=model)
 ti.setTaskFromYaml(horizon_config)
 
-# for cost_name, cost in prb.getCosts().items():
-#     print(f"Cost '{cost_name}' nodes: {cost.getNodes()}")
-
-# exit()
 # Print initial FK vs desired for user awareness (after model and ti are defined)
 fk_ee_pos = kin_dyn.fk('ee_F')(q=model.q0)['ee_pos'][:, 0]
 fk_ee_rot = R.from_matrix((kin_dyn.fk('ee_F')(q=model.q0)['ee_rot'].full())).as_quat()
@@ -246,11 +218,11 @@ cnsrt_vel_linear_guide.setBounds(0, np.inf)
 # constant_vel_linear_guide.setBounds(0., 0.)
 
 # constant_vel_yaw_guide = prb.createIntermediateConstraint('yaw_axis_constant_velocity', model.a[15])
-# constant_vel_yaw_guide.setBounds(0., 0.)
+# constant_vel_yaw_guide.setBous(0., 0.)
 
-# id_fn = kin_dyn_utils.InverseDynamics(kin_dyn) # force_reference_frame = cas_kin_dyn.CasadiKinDyn.LOCAL
-# tau_weight_min = 1e1
-# tau = id_fn.call(model.q, 0., 0.)
+# id_fn = kin_dyn_utils.InverseDynamics(kin_dyn) # force_reference_frame = cas_kin_dyn.CasadinDyn.LOCAL
+# tau_weig_min = 1e1
+# tau = id_fn.call(modeq, 0., 0.)
 # prb.createResidual('tau_cost', tau_weight_min * tau)
 
 ti.finalize()
@@ -267,13 +239,25 @@ solution_found = False
 # data = loadmat(matfile)
 # q_init = data.get('q')  # Use the first column of q as the initial guess
 # =================================================================================
+import rclpy
+from rviz_point_marker import PersistentPointSpawner
+
+rclpy.init()
+
+point_pub = PersistentPointSpawner('initial_points', 
+                                   'world', 
+                                   1.0, 0.0, 0.0, 1.0)
 
 while is_colliding == True or solution_found == False:
 
     random_pose_x = np.random.uniform(low=bound_initial_pos_x_low, high=bound_initial_pos_x_high, size=1)
     random_pose_y = np.random.uniform(low=bound_initial_pos_y_low, high=bound_initial_pos_y_high, size=1)
 
-    
+    point_pub.add_point(random_pose_x[0], random_pose_y[0], 0.1)
+    # Spin briefly so messages actually get sent
+    rclpy.spin_once(point_pub, timeout_sec=0.0)
+
+    print(f'Publishing point: x={random_pose_x[0]}, y={random_pose_y[0]}')
 
     initial_guess_q = ti.model.q0.copy()
     initial_guess_q[0] = random_pose_x  # Randomize base X position in initial guess
@@ -296,7 +280,6 @@ while is_colliding == True or solution_found == False:
             is_colliding = True
         
         # print("-----")
-
 
 id_fn = kin_dyn_utils.InverseDynamics(kin_dyn) # force_reference_frame = cas_kin_dyn.CasadiKinDyn.LOCAL
 # Compute tau for all nodes

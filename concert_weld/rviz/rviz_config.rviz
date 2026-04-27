@@ -9,7 +9,6 @@ Panels:
         - /Grid1
         - /RobotModel1
         - /TF1/Frames1
-        - /initial_zone_marker1
       Splitter Ratio: 0.5
     Tree Height: 752
   - Class: rviz_common/Selection
@@ -861,10 +860,10 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.9097980260848999
+      Pitch: 1.50979745388031
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 1.8003873825073242
+      Yaw: 1.7053874731063843
     Saved: ~
 Window Geometry:
   Displays:

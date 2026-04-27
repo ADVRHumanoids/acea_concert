@@ -2,7 +2,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 
-def generate_circular_trajectory(ns, center, radius, angle_start=0.0, angle_end=2*np.pi):
+def generate_circular_trajectory(ns, center, radius, angle_start=0.0, angle_end=2*np.pi, upside_down=False):
     """
     Generate a circular trajectory in the XZ plane (constant Y).
 
@@ -34,6 +34,7 @@ def generate_circular_trajectory(ns, center, radius, angle_start=0.0, angle_end=
 
         # Orientation: tool z-axis points radially inward from center
         normal = np.array([-np.cos(angle), 0.0, -np.sin(angle)])
+        # normal = np.array([np.sin(angle), 0.0, -np.cos(angle)])
         y_axis = np.array([0.0, -1.0, 0.0])
 
         z_tool = normal
@@ -41,6 +42,11 @@ def generate_circular_trajectory(ns, center, radius, angle_start=0.0, angle_end=
         x_tool = np.cross(y_tool, z_tool)
         rot_matrix = np.column_stack([x_tool, y_tool, z_tool])
 
+        # Rotate the frame by 180 deg around z so x aligns with -x
+        if upside_down:
+            rot_z_180 = R.from_euler('z', 180, degrees=True).as_matrix()
+            rot_matrix = rot_matrix @ rot_z_180
+            
         orientations[:, k] = R.from_matrix(rot_matrix).as_quat()  # Quaternion (x, y, z, w)
 
     return positions, orientations

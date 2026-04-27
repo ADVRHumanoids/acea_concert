@@ -9,7 +9,6 @@ import os, sys
 from pathlib import Path
 import casadi_kin_dyn.py3casadi_kin_dyn as casadi_kin_dyn
 
-from geometry_msgs.msg import Vector3
 from scipy.spatial.transform import Rotation as R
 from scipy.io import loadmat
 from horizon.ros import replay_trajectory
@@ -36,7 +35,8 @@ prb.setDt(dt)
 
 PATH_TO_CONCERT_WS = Path("/home/user/concert_ws")
 PATH_TO_CONCERT_WELD = PATH_TO_CONCERT_WS/"src"/"concert_weld"
-modular_prismatic = PATH_TO_CONCERT_WS/"src"/"concert_description"/"concert_examples"/"src"/"concert_prismatic.py"
+# modular_prismatic = PATH_TO_CONCERT_WS/"src"/"concert_description"/"concert_examples"/"src"/"concert_prismatic.py"
+modular_prismatic = PATH_TO_CONCERT_WS/"src"/"concert_weld"/"src"/"modular"/"concert_with_torch.py"
 horizon_config = PATH_TO_CONCERT_WS/"src"/"concert_weld"/"config"/"weld.yaml"
 
 urdf = subprocess.check_output(["python3", str(modular_prismatic), "-o", "urdf"], text=True)
@@ -74,11 +74,13 @@ length_pipe = 5.0
 pos_center_pipe = [1.5, 0.0, 0.75]
 orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
 radius_pipe = 0.5
-# angle_weld_start = 1/2 *np.pi
-# angle_weld_end = np.pi # 3/2 * np.pi #2 * np.pi
+# first half
+angle_weld_start = 1/2 *np.pi
+angle_weld_end = np.pi # 3/2 * np.pi #2 * np.pi
 
-angle_weld_start = 1/2 * np.pi
-angle_weld_end = 3/2 * np.pi # 3/2 * np.pi #2 * np.pi
+# second half
+# angle_weld_start = np.pi
+# angle_weld_end = 3/2 * np.pi
 
 margin_x = 0. # Some margin around the pipe
 bound_initial_pos_x_low = -0.5 # 0 is good!
@@ -100,6 +102,7 @@ position, orientation = generate_circular_trajectory(
     radius=radius_pipe,
     angle_start=angle_weld_start,
     angle_end=angle_weld_end,
+    upside_down=False
 )
 
 # =================================================================================

@@ -2,7 +2,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation as R
 
 
-def generate_circular_trajectory(ns, center, radius, angle_start=0.0, angle_end=2*np.pi, upside_down=False):
+def generate_circular_trajectory(ns, center, radius, angle_start=0.0, angle_end=2*np.pi, upside_down=False, wiggle_amplitude=None, wiggle_frequency=None):
     """
     Generate a circular trajectory in the XZ plane (constant Y).
 
@@ -14,7 +14,9 @@ def generate_circular_trajectory(ns, center, radius, angle_start=0.0, angle_end=
         center: [x, y, z] center of the circle in world frame
         radius: radius of the circle in meters
         angle_start: starting angle in radians (default 0)
-        angle_end: ending angle in radians (default 2*pi for full circle)
+        angle_end: ending angle in radians (default 2*pi for full circle
+        wiggle_amplitude: amplitude of the wiggle (default None)
+        wiggle_frequency: frequency of the wiggle (default None)
 
     Returns:
         positions: (3, ns+1) numpy array
@@ -34,9 +36,9 @@ def generate_circular_trajectory(ns, center, radius, angle_start=0.0, angle_end=
 
 
         # Add wiggling sinusoidal y motion
-        # amplitude = 0.02  # amplitude of the wiggle (meters)
-        # frequency = 10    # number of wiggles per full circle
-        # positions[1, k] = center[1] + amplitude * np.sin(frequency * angle)
+        if wiggle_amplitude is not None and wiggle_frequency is not None:
+            wiggle = wiggle_amplitude * np.sin(wiggle_frequency * angle)
+            positions[1, k] += wiggle
 
         # Orientation: tool z-axis points radially inward from center
         normal = np.array([-np.cos(angle), 0.0, -np.sin(angle)])

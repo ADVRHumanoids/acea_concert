@@ -98,7 +98,7 @@ size_x = abs(bound_initial_pos_x_high - bound_initial_pos_x_low)
 size_y = abs(bound_initial_pos_y_high - bound_initial_pos_y_low)
 
 # Generate trajectory and get initial desired pose
-position, orientation = generate_circular_trajectory(
+circular_pos, circular_ori = generate_circular_trajectory(
     ns,
     center=pos_center_pipe,
     radius=radius_pipe,
@@ -127,7 +127,7 @@ init_scene = InitScene(
     center_y=center_y,
     size_x=size_x,
     size_y=size_y,
-    position=position
+    position=circular_pos
 )
 init_scene.kill_existing_markers()
 init_scene.launch_scene()
@@ -169,10 +169,10 @@ fk_ee_rot = R.from_matrix((kin_dyn.fk('ee_F')(q=model.q0)['ee_rot'].full())).as_
 print(f"[INFO] Initial ee_F pos: {fk_ee_pos}, rot (quat): {fk_ee_rot}")
 
 position_aug = np.full((7, ns + 1), 0.0)
-position_aug[:3, :] = position
+position_aug[:3, :] = circular_pos
 
 orientation_aug = np.full((7, ns + 1), 0.0)
-orientation_aug[3:, :] = orientation
+orientation_aug[3:, :] = circular_ori
 
 pos_task_name = 'ee_pos'
 ori_task_name = 'ee_ori'
@@ -203,6 +203,7 @@ ti.model.q[3:7].setBounds(tmp_q0[3:7], tmp_q0[3:7])
 base_pos_xy = prb.createSingleVariable('base_pos_xy', 2)
 prb.createConstraint('base_pos_xy_constraint', model.q[:2] - base_pos_xy)
 
+# robot starts with zero velocity and ends with zero velocity
 # ti.model.q[0].setBounds(bound_initial_pos_x_low, bound_initial_pos_x_high) 
 # ti.model.q[1].setBounds(bound_initial_pos_y_low, bound_initial_pos_y_high)
 
@@ -251,7 +252,7 @@ rclpy.init()
 
 point_pub = PersistentPointSpawner('initial_points', 
                                    'world', 
-                                   1.0, 0.0, 0.0, 1.0)
+                                   1.0, 0.0, 0.0, 1.0) # color RGBA for the points
 
 while is_colliding == True or solution_found == False:
 
@@ -306,14 +307,23 @@ info_dict = dict(
     pos_center_pipe=pos_center_pipe,
     orientation_pipe=orientation_pipe,
     radius_pipe=radius_pipe,
+    length_pipe=length_pipe,
+    initial_zone_center_x=center_x,
+    initial_zone_center_y=center_y,
+    initial_zone_size_x=size_x,
+    initial_zone_size_y=size_y,
+    footprint_robot_x=footprint_robot_x,
+    footprint_robot_y=footprint_robot_y,
     angle_weld_start=angle_weld_start,
     angle_weld_end=angle_weld_end,
     tau=tau,
     joint_names=model.kd.joint_names(),
+    desired_traj_weld_pos=circular_pos,
     initial_robot_pose=solution['q'][:, 0], 
 )
 
 ms.store({**solution, **info_dict})
+
 
 q_forward = solution['q']
 q_backward = np.flip(q_forward, axis=1)

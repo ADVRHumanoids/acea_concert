@@ -32,6 +32,12 @@ def generate_circular_trajectory(ns, center, radius, angle_start=0.0, angle_end=
         positions[1, k] = center[1]
         positions[2, k] = center[2] + radius * np.sin(angle)
 
+
+        # Add wiggling sinusoidal y motion
+        # amplitude = 0.02  # amplitude of the wiggle (meters)
+        # frequency = 10    # number of wiggles per full circle
+        # positions[1, k] = center[1] + amplitude * np.sin(frequency * angle)
+
         # Orientation: tool z-axis points radially inward from center
         normal = np.array([-np.cos(angle), 0.0, -np.sin(angle)])
         # normal = np.array([np.sin(angle), 0.0, -np.cos(angle)])

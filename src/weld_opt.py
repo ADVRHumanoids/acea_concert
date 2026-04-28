@@ -13,6 +13,8 @@ from scipy.spatial.transform import Rotation as R
 from scipy.io import loadmat
 from horizon.ros import replay_trajectory
 
+from circular_trajectory import generate_circular_trajectory
+
 from collision_checker import CollisionChecker
 import casadi as cs
 import numpy as np
@@ -34,10 +36,10 @@ prb.setDt(dt)
 # ========================================================
 
 PATH_TO_CONCERT_WS = Path("/home/user/concert_ws")
-PATH_TO_CONCERT_WELD = PATH_TO_CONCERT_WS/"src"/"concert_weld"
+PATH_TO_ACEA_CONCERT = PATH_TO_CONCERT_WS/"src"/"acea_concert"
 # modular_prismatic = PATH_TO_CONCERT_WS/"src"/"concert_description"/"concert_examples"/"src"/"concert_prismatic.py"
-modular_prismatic = PATH_TO_CONCERT_WS/"src"/"concert_weld"/"src"/"modular"/"concert_with_torch.py"
-horizon_config = PATH_TO_CONCERT_WS/"src"/"concert_weld"/"config"/"weld.yaml"
+modular_prismatic = PATH_TO_ACEA_CONCERT/"src"/"modular"/"concert_with_torch.py"
+horizon_config = PATH_TO_ACEA_CONCERT/"config"/"weld.yaml"
 
 urdf = subprocess.check_output(["python3", str(modular_prismatic), "-o", "urdf"], text=True)
 srdf = subprocess.check_output(["python3", str(modular_prismatic), "-o", "srdf"], text=True)
@@ -66,7 +68,7 @@ kin_dyn = casadi_kin_dyn.CasadiKinDyn(urdf)
 # print(f"joint names: {kin_dyn.joint_names()}")
 
 # Apply circular trajectory for ee_F
-from circular_trajectory import generate_circular_trajectory
+
 footprint_robot_x = 1.2
 footprint_robot_y = 0.7
 
@@ -112,9 +114,9 @@ coll_checker.add_pipe('weld_pipe', radius_pipe, length_pipe, pos_center_pipe, or
 # =================================================================================
 
 # Initialize RViz scene with pipe, footprint, and trajectory markers
-from init_scene import InitScene
+from viz.init_scene import InitScene
 init_scene = InitScene(
-    path_ws=PATH_TO_CONCERT_WS,
+    path_ws=PATH_TO_ACEA_CONCERT/"src"/"viz",
     pos_center_pipe=pos_center_pipe,
     radius_pipe=radius_pipe,
     length_pipe=length_pipe,
@@ -243,7 +245,7 @@ solution_found = False
 # q_init = data.get('q')  # Use the first column of q as the initial guess
 # =================================================================================
 import rclpy
-from rviz_point_marker import PersistentPointSpawner
+from viz.rviz_point_marker import PersistentPointSpawner
 
 rclpy.init()
 
@@ -295,9 +297,9 @@ for node in range(ns - 1):
 
 
 name_file = "weld_concert"
-if not os.path.exists(f"{PATH_TO_CONCERT_WELD}/mat_files"):
-    os.mkdir(f"{PATH_TO_CONCERT_WELD}/mat_files")
-ms = mat_storer.matStorer(f"{PATH_TO_CONCERT_WELD}/mat_files/" + name_file + '.mat')
+if not os.path.exists(f"{PATH_TO_ACEA_CONCERT}/mat_files"):
+    os.mkdir(f"{PATH_TO_ACEA_CONCERT}/mat_files")
+ms = mat_storer.matStorer(f"{PATH_TO_ACEA_CONCERT}/mat_files/" + name_file + '.mat')
 info_dict = dict(
     n_nodes=prb.getNNodes(),
     dt=prb.getDt(),

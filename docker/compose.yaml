@@ -6,16 +6,16 @@ services:
     stdin_open: true
     tty: true 
     privileged: true
-    command: ["/bin/bash", "-c", "bash /home/user/patch/patch_container.sh && exec bash"]
+    command: ["/bin/bash", "-c", "bash /home/user/concert_ws/src/acea_concert/mount_files/patch_container.sh && exec bash"]
     restart: always
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw  # x11
       - ~/.ssh:/home/user/.ssh  # ssh
       - ~/Qt:/home/user/Qt  # qt
-      - ../concert_weld:/home/user/concert_ws/src/concert_weld:rw  # mount whole concert_weld folder
-      - ../mount_files/config_file.yaml:/home/user/patch/config_file.yaml:ro  # config file
-      - ../mount_files/concert_prismatic.py:/home/user/patch/concert_prismatic.py:ro  # prismatic script
-      - ../mount_files/patch_container.sh:/home/user/patch/patch_container.sh:ro
+      - ../../acea_concert:/home/user/concert_ws/src/acea_concert:rw  # mount whole acea_concert folder
+      # - ../mount_files/config_file.yaml:/home/user/patch/config_file.yaml:ro  # config file
+      # - ../mount_files/concert_prismatic.py:/home/user/patch/concert_prismatic.py:ro  # prismatic script
+      # - ../mount_files/patch_container.sh:/home/user/patch/patch_container.sh:ro
 
 
     environment:

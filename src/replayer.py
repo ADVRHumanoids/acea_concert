@@ -21,12 +21,8 @@ class TrajectoryReplayer:
 
         self.urdf = subprocess.check_output(["python3", str(modular_prismatic), "-o", "urdf"], text=True)
 
-        self.solution_publisher = None
-        self.sol_msgs = list()
         self.solution_augmented = None
-
         self.fixed_joint_map = fixed_joint_map
-
         self.kin_dyn = casadi_kin_dyn.CasadiKinDyn(self.urdf)
         self.data = data
 
@@ -58,6 +54,7 @@ class TrajectoryReplayer:
 
         self.dt = self.data['dt'][0][0]
         self.ns = self.data['n_nodes'][0][0]
+
         print(f'n nodes: {self.ns}')
         print(f'dt: {self.dt}')
         print(f'dim q: {self.dim_q}x{self.nodes_q}') # n nodes
@@ -77,6 +74,9 @@ class TrajectoryReplayer:
     def init_scene(self):
 
         from viz.init_scene import InitScene
+
+        self.init_robot_state_publisher()
+
         init_scene = InitScene(
             path_ws=PATH_TO_ACEA_CONCERT/"src"/"viz",
             pos_center_pipe=self.pos_center_pipe,
@@ -108,18 +108,16 @@ class TrajectoryReplayer:
 
             repl.replay()
 
-    def add_wiggling_ee_y(self, amplitude=0.01, frequency=2*np.pi):
+    def add_wiggling_ee_y(self, nodes, t_max, wiggle_amplitude=0.01, wiggle_frequency=2*np.pi):
 
         from horizon.problem import Problem
         import casadi as cs
-        from horizon.problem import Problem
         from horizon.rhc.model_description import FullModelInverseDynamics
         from horizon.rhc.taskInterface import TaskInterface
-        from horizon.utils import kin_dyn as kin_dyn_utils
         from circular_trajectory import generate_circular_trajectory
 
-        ns = 100
-        T = 2.0
+        ns = nodes
+        T = t_max
         dt = T / ns
 
         prb = Problem(ns, receding=True, casadi_type=cs.SX)
@@ -133,32 +131,20 @@ class TrajectoryReplayer:
         angle_start=self.angle_weld_start,
         angle_end=self.angle_weld_end,
         upside_down=False,
-        wiggle_amplitude=amplitude,
-        wiggle_frequency=frequency
+        wiggle_amplitude=wiggle_amplitude,
+        wiggle_frequency=wiggle_frequency
         )
 
         self.desired_traj_weld_pos = circular_pos
 
-        self.init_scene()  # Re-initialize the scene to update the desired trajectory visualization
+        self.init_scene()  # initialize the scene to update the desired trajectory visualization
 
         base_init = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])  # Y (no lateral offset)
 
         # Keep q_init as before, but you can tune these if needed
-        q_init = {
-            'J1_A': 0.0,
-            'J_wheel_A': 0.0,
-            'J1_B': 0.0,
-            'J_wheel_B': 0.0,
-            'J1_C': 0.0,
-            'J_wheel_C': 0.0,
-            'J1_D': 0.0,
-            'J_wheel_D': 0.0,
-            'J1_E': -np.pi/2,
-            'J2_E': 0.0,
-            'J1_F': 0.0,
-            'J2_F': 0.0,
-            'J3_F': 0.0,
-        }
+        
+        exit  # Ensure joint names are loaded
+        q_init = dict(zip(self.joint_names, self.data['q'][7:, 0]))
 
         model = FullModelInverseDynamics(problem=prb,
                                         kd=self.kin_dyn,
@@ -228,6 +214,9 @@ if __name__ == '__main__':
     data = scipy.io.loadmat(matfile)
     xbot_horizon_replayer = TrajectoryReplayer(data)
     xbot_horizon_replayer.init_robot_state_publisher()
-    xbot_horizon_replayer.add_wiggling_ee_y(amplitude=0.01, frequency=100*np.pi)  # Resample to 100 nodes for smoother replay
-    
+    xbot_horizon_replayer.add_wiggling_ee_y(nodes=200,
+                                            t_max=2,
+                                            wiggle_amplitude=0.01, 
+                                            wiggle_frequency=200*np.pi)  # Resample to 100 nodes for smoother replay
+
     xbot_horizon_replayer.replay()

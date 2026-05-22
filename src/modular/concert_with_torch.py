@@ -6,7 +6,7 @@ is_floating_base = True
 with suppress_stdout():
 
     # create UrdfWriter object and joint map to store homing values
-    urdf_writer = UrdfWriter(speedup=True, floating_base=False)
+    urdf_writer = UrdfWriter(speedup=True, floating_base=is_floating_base)
     homing_joint_map = {}
 
     # add mobile base
@@ -58,19 +58,25 @@ with suppress_stdout():
     # # Left mounted interface
     data = urdf_writer.select_module_from_name('hub_prismatic_cart_con4')
 
-    data = urdf_writer.add_module('concert/module_joint_elbow_B_concert.json')
-    homing_joint_map[str(data['name'])] = 0.0
+    data = urdf_writer.add_module('concert/module_joint_elbow_A_concert.json')
+    # ---- override stiffness values on this specific joint ----
+    module = urdf_writer.parent_module
 
-    data = urdf_writer.add_module('concert/module_joint_yaw_B_concert.json')
+    homing_joint_map[str(data['name'])] = 0.0
+    # Gazebo PID (used in simulation)
+    # module.xbot_gz.pid.p = 3000.0
+    # module.xbot_gz.pid.d = 30.0
+
+    data = urdf_writer.add_module('concert/module_joint_yaw_A_concert.json')
     homing_joint_map[str(data['name'])] = 0.0
 
     #add a 30cm passive link
     data = urdf_writer.add_module('concert/module_link_straight_300_concert.json')
 
-    data = urdf_writer.add_module('concert/module_joint_elbow_B_concert.json')
+    data = urdf_writer.add_module('concert/module_joint_elbow_A_concert.json')
     homing_joint_map[str(data['name'])] = 0.0
 
-    data = urdf_writer.add_module('concert/module_joint_yaw_B_concert.json')
+    data = urdf_writer.add_module('concert/module_joint_yaw_A_concert.json')
     homing_joint_map[str(data['name'])] = 0.0
     
     #add a 30cm passive link

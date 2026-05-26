@@ -1,0 +1,56 @@
+cmake_minimum_required(VERSION 3.8)
+project(acea_concert)
+
+find_package(ament_cmake REQUIRED)
+
+# --- Python scripts (runnable via ros2 run or directly) ---
+install(PROGRAMS
+  src/weld_opt.py
+  src/replayer.py
+  src/controller.py
+  src/circular_trajectory.py
+  src/collision_checker.py
+  src/plot_weld_result.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY src/modular/
+  DESTINATION lib/${PROJECT_NAME}/modular
+  FILES_MATCHING PATTERN "*.py"
+)
+
+install(DIRECTORY src/viz/
+  DESTINATION lib/${PROJECT_NAME}/viz
+  FILES_MATCHING PATTERN "*.py"
+)
+
+# --- ROS share files ---
+install(DIRECTORY launch/
+  DESTINATION share/${PROJECT_NAME}/launch
+  FILES_MATCHING PATTERN "*.py"
+)
+
+install(DIRECTORY config/
+  DESTINATION share/${PROJECT_NAME}/config
+  FILES_MATCHING PATTERN "*.yaml" PATTERN "*.yml"
+)
+
+install(DIRECTORY rviz/
+  DESTINATION share/${PROJECT_NAME}/rviz
+  FILES_MATCHING PATTERN "*.rviz"
+)
+
+install(DIRECTORY world/
+  DESTINATION share/${PROJECT_NAME}/world
+  FILES_MATCHING PATTERN "*.sdf"
+)
+
+install(FILES resource/acea_concert
+  DESTINATION share/ament_index/resource_index/packages
+)
+
+install(FILES package.xml
+  DESTINATION share/${PROJECT_NAME}
+)
+
+ament_package()

@@ -1,0 +1,26 @@
+solver_options:
+  regularization: 1e-4
+  back_end: "qpoases"
+
+stack:
+  - ["ee_F"]
+  - ["Postural"]
+
+constraints:
+  - joint_limits
+  - velocity_limits
+
+ee_F:
+  type: Cartesian
+  distal_link: ee_F
+  lambda: 1.0
+
+Postural:
+  type: Postural
+  lambda: 1.0
+
+joint_limits:
+  type: JointLimits
+
+velocity_limits:
+  type: VelocityLimits

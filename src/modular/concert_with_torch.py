@@ -46,11 +46,11 @@ with suppress_stdout():
 
     # big yaw (a.k.a. ralla)
     data = urdf_writer.add_module('experimental/module_joint_yaw_XL_concert.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0})
-    homing_joint_map[str(data['name'])] = 0.0
+    homing_joint_map[str(data['name'])] = -3.14159265 / 2  # -pi/2, matches weld_opt.py
 
-    # prismatic joint
+    # prismatic joint  →  J2_E
     data = urdf_writer.add_module('experimental/module_joint_prismatic_concert.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0})
-    homing_joint_map[str(data['name'])] = 0.0
+    homing_joint_map[str(data['name'])] = 0.8
 
     data = urdf_writer.add_module('experimental/module_hub_prismatic_cart_concert.json', module_name='hub_prismatic_cart', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0})
     homing_joint_map[str(data['name'])] = 0.0
@@ -58,34 +58,34 @@ with suppress_stdout():
     # # Left mounted interface
     data = urdf_writer.select_module_from_name('hub_prismatic_cart_con4')
 
-    data = urdf_writer.add_module('concert/module_joint_elbow_A_concert.json')
-    # ---- override stiffness values on this specific joint ----
-    module = urdf_writer.parent_module
+    # Override Gazebo PID inside the resource dict BEFORE adding the module,
+    # so UrdfWriter reads the new values when it builds the URDF.
+    # elbow_A_dict = urdf_writer.modular_resources_manager.available_modules_dict['concert/module_joint_elbow_A_concert.json']
+    # elbow_A_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['p'] = 3000.0
+    # elbow_A_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['d'] = 30.0
 
-    homing_joint_map[str(data['name'])] = 0.0
-    # Gazebo PID (used in simulation)
-    # module.xbot_gz.pid.p = 3000.0
-    # module.xbot_gz.pid.d = 30.0
+    data = urdf_writer.add_module('concert/module_joint_elbow_A_concert.json')  # J1_F
+    homing_joint_map[str(data['name'])] = -0.85
 
-    data = urdf_writer.add_module('concert/module_joint_yaw_A_concert.json')
+    data = urdf_writer.add_module('concert/module_joint_yaw_A_concert.json')    # J2_F
     homing_joint_map[str(data['name'])] = 0.0
 
     #add a 30cm passive link
     data = urdf_writer.add_module('concert/module_link_straight_300_concert.json')
 
-    data = urdf_writer.add_module('concert/module_joint_elbow_A_concert.json')
-    homing_joint_map[str(data['name'])] = 0.0
+    data = urdf_writer.add_module('concert/module_joint_elbow_A_concert.json')  # J3_F
+    homing_joint_map[str(data['name'])] = -1.47
 
-    data = urdf_writer.add_module('concert/module_joint_yaw_A_concert.json')
+    data = urdf_writer.add_module('concert/module_joint_yaw_A_concert.json')    # J4_F
     homing_joint_map[str(data['name'])] = 0.0
     
     #add a 30cm passive link
     data = urdf_writer.add_module('concert/module_link_straight_300_concert.json')
 
-    data = urdf_writer.add_module('concert/module_joint_elbow_B_concert.json')
-    homing_joint_map[str(data['name'])] = 0.0
+    data = urdf_writer.add_module('concert/module_joint_elbow_B_concert.json')  # J5_F
+    homing_joint_map[str(data['name'])] = 0.75
 
-    data = urdf_writer.add_module('concert/module_joint_yaw_B_concert.json')
+    data = urdf_writer.add_module('concert/module_joint_yaw_B_concert.json')    # J6_F
     homing_joint_map[str(data['name'])] = 0.0
 
     data = urdf_writer.add_module('experimental/module_weld_torch_dummy.json')

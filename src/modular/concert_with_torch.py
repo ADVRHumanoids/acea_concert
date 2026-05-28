@@ -50,7 +50,7 @@ with suppress_stdout():
 
     # prismatic joint  →  J2_E
     data = urdf_writer.add_module('experimental/module_joint_prismatic_concert.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0})
-    homing_joint_map[str(data['name'])] = 0.8
+    homing_joint_map[str(data['name'])] = 1.0 
 
     data = urdf_writer.add_module('experimental/module_hub_prismatic_cart_concert.json', module_name='hub_prismatic_cart', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0})
     homing_joint_map[str(data['name'])] = 0.0
@@ -60,9 +60,9 @@ with suppress_stdout():
 
     # Override Gazebo PID inside the resource dict BEFORE adding the module,
     # so UrdfWriter reads the new values when it builds the URDF.
-    # elbow_A_dict = urdf_writer.modular_resources_manager.available_modules_dict['concert/module_joint_elbow_A_concert.json']
-    # elbow_A_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['p'] = 3000.0
-    # elbow_A_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['d'] = 30.0
+    elbow_A_dict = urdf_writer.modular_resources_manager.available_modules_dict['concert/module_joint_elbow_A_concert.json']
+    elbow_A_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['p'] = 5000.0
+    elbow_A_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['d'] = 30.0
 
     data = urdf_writer.add_module('concert/module_joint_elbow_A_concert.json')  # J1_F
     homing_joint_map[str(data['name'])] = -0.85

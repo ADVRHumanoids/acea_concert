@@ -41,7 +41,7 @@ KP_XYZ = [1.0, 2.0, 1.0]    # proportional [1/s]
 KD_XYZ = [0.05, 0.1, 0.05]  # derivative   [s]
 
 # ── Trajectory slowdown factor ───────────────────────────────────────────────
-TRAJ_SLOWDOWN = 5.0  # 1.0 = normal speed, 2.0 = half speed, etc.
+TRAJ_SLOWDOWN = 12.0  # 1.0 = normal speed, 2.0 = half speed, etc.
 # ── Gap Y target ─────────────────────────────────────────────────────────────
 # Set to None to use the robot's initial EE Y as the gap level,
 # or set explicitly, e.g. Y_GAP = 0.35 (world-frame metres).
@@ -257,8 +257,17 @@ while True:
     ee_pose_des.translation[1] = gap_y  # Clamp Y to the gap
 
      # ── PD law (world frame) ──────────────────────────────────────────────    
-    # ee_pose_cur = model.getPose(ee_distal, ee_base)
-    # y_cur = ee_pose_cur.translation[1]
+    ee_pose_cur = model.getPose(ee_distal, ee_base)
+    y_cur = ee_pose_cur.translation[1]
+
+
+    robot.sense()
+    q_map_robot = robot.qToMap(robot.getMotorPosition())
+    tmp_model = xbi.ModelInterface2(urdf, srdf, 'pin')
+    tmp_model.setJointPosition(q_map_robot)
+    tmp_model.update()
+    ee_pose_cur = tmp_model.getPose(ee_distal, ee_base)
+    ee_pos_cur = ee_pose_cur.translation
 
     # ── (Optional) Estimate y_dot_cur (numerical derivative)
     # if 'y_prev' not in locals():
@@ -269,17 +278,17 @@ while True:
         # y_prev = y_cur
 
     # ── PD control for Y
-    pos_err  = prev_pos_err
-    vel_err  = (pos_err - prev_pos_err) / DT   # numerical derivative of error
-    prev_pos_err = pos_err.copy()
+    # pos_err  = prev_pos_err
+    # vel_err  = (pos_err - prev_pos_err) / DT   # numerical derivative of error
+    # prev_pos_err = pos_err.copy()
 
-    KP = np.array(KP_XYZ)
-    KD = np.array(KD_XYZ)
+    # KP = np.array(KP_XYZ)
+    # KD = np.array(KD_XYZ)
 
     # Cartesian velocity command [vx, vy, vz] in world frame
-    v_cmd = np.array([0.0, 0.0, 0.0]) \
-            + KP * pos_err \
-            + KD * vel_err
+    # v_cmd = np.array([0.0, 0.0, 0.0]) \
+            # + KP * pos_err \
+            # + KD * vel_err
 
     # ── Send pose and velocity reference
     ee_task.setPoseReference(ee_pose_des)
@@ -287,7 +296,6 @@ while True:
 
     # ── IK step — writes model.v ─────────────────────────────────────────
     ci.update(t, DT)
-
 
     # ── Integrate model state ─────────────────────────────────────────────
     model.setJointPosition(model.sum(model.q, model.v * DT))
@@ -297,8 +305,13 @@ while True:
     robot.setPositionReference(model.getJointPosition())
     robot.move()
 
+    # --- Print error between actual and desired EE pose (position only) ---
+    ee_pos_des = ee_pose_des.translation
+    ee_pos_cur = ee_pose_cur.translation
+    ee_err = ee_pos_des - ee_pos_cur
+    print(f"[EE ERROR] t={t:7.3f}s | des=[{ee_pos_des[0]:.4f}, {ee_pos_des[1]:.4f}, {ee_pos_des[2]:.4f}] | cur=[{ee_pos_cur[0]:.4f}, {ee_pos_cur[1]:.4f}, {ee_pos_cur[2]:.4f}] | err=[{ee_err[0]:+.4f}, {ee_err[1]:+.4f}, {ee_err[2]:+.4f}] | |err|={np.linalg.norm(ee_err):.4f} m")
+
     t += DT
-    print(f"[controller] t={t:.3f}s")
 
     # ── 13) Pace the loop ─────────────────────────────────────────────────────
     elapsed = perf_counter() - t0

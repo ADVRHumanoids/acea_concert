@@ -64,6 +64,14 @@ with suppress_stdout():
     elbow_A_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['p'] = 5000.0
     elbow_A_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['d'] = 30.0
 
+    elbow_B_dict = urdf_writer.modular_resources_manager.available_modules_dict['concert/module_joint_elbow_B_concert.json']
+    elbow_B_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['p'] = 4000.0
+    elbow_B_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['d'] = 30.0
+
+    prismatic_dict = urdf_writer.modular_resources_manager.available_modules_dict['experimental/module_joint_prismatic_concert.json']
+    prismatic_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['p'] = 10000.0
+    prismatic_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['d'] = 30.0
+
     data = urdf_writer.add_module('concert/module_joint_elbow_A_concert.json')  # J1_F
     homing_joint_map[str(data['name'])] = -0.85
 

@@ -20,7 +20,8 @@ import numpy as np
 from scipy.io import loadmat
 from scipy.interpolate import interp1d
 import rclpy
-from rcl_interfaces.srv import GetParameters
+
+from utils.ros_utils import fetch_robot_description
 from xbot2_interface import pyxbot2_interface as xbi
 from xbot2_interface.pyaffine3 import Affine3
 from cartesian_interface import pyci
@@ -58,67 +59,51 @@ GAP_Y = 0.0  # The gap plane is at y=0 in simulation
 
 # ── Load weld_opt trajectory from mat file ────────────────────────────────────
 print(f"[controller] Loading trajectory from {MAT_FILE} …")
-_mat = loadmat(str(MAT_FILE))
+mat_data = loadmat(str(MAT_FILE))
 
 # q: (nq x N_nodes) — full model joint vector (floating base + actuated)
 # joint_names: casadi_kin_dyn list — starts with virtual joints ('universe',
 # 'reference', …) that have no rows in q; real actuated joints follow.
-_q_traj = _mat['q']                          # shape (nq, N)
+q_traj = mat_data['q']                          # shape (nq, N)
 
-_all_jnames = [str(n).strip() for n in _mat['joint_names'].flatten()]
+all_jnames = [str(n).strip() for n in mat_data['joint_names'].flatten()]
 
-_trj_dt  = float(np.atleast_1d(_mat['dt']).flat[0])
-_N       = _q_traj.shape[1]
-_trj_dur = (_N - 1) * _trj_dt
+trj_dt  = float(np.atleast_1d(mat_data['dt']).flat[0])
+N       = q_traj.shape[1]
+trj_dur = (N - 1) * trj_dt
 
 # The first 7 rows are floating-base (pos xyz + quat xyzw); rest are actuated.
-_n_base  = 7
-_q_act   = _q_traj[_n_base:, :]              # (n_actuated x N)
-_n_act   = _q_act.shape[0]
+n_base  = 7
+q_act   = q_traj[n_base:, :]              # (n_actuated x N)
+n_act   = q_act.shape[0]
 
 # casadi_kin_dyn prepends virtual/fixed joints ('universe', 'reference', …)
 # that carry no DOF — strip them so len(_jnames) == _n_act
-_VIRTUAL = {'universe', 'reference'}
-_jnames  = [n for n in _all_jnames if n not in _VIRTUAL]
-if len(_jnames) != _n_act:
-    # Fallback: take the last _n_act names
-    print(f"[controller] WARNING: joint_names after virtual strip ({len(_jnames)}) "
-          f"!= q_act rows ({_n_act}). Falling back to last {_n_act} names.")
-    _jnames = _all_jnames[-_n_act:]
+VIRTUAL = {'universe', 'reference'}
+jnames  = [n for n in all_jnames if n not in VIRTUAL]
 
-print(f"[controller] Trajectory: {_N} nodes, dt={_trj_dt:.4f}s, duration={_trj_dur:.2f}s")
-print(f"[controller] Actuated joint names ({len(_jnames)}): {_jnames}")
+print(f"[controller] Trajectory: {N} nodes, dt={trj_dt:.4f}s, duration={trj_dur:.2f}s")
+print(f"[controller] Actuated joint names ({len(jnames)}): {jnames}")
 
 # Build a per-joint interpolator (cyclic: forward then backward)
-_q_cycle = np.concatenate([_q_act, _q_act[:, ::-1]], axis=1)   # forward + backward
-_cycle_dur = 2 * _trj_dur
-_t_nodes   = np.linspace(0.0, _cycle_dur, _q_cycle.shape[1])
-_trj_interp = interp1d(_t_nodes, _q_cycle, axis=1, kind='linear', fill_value='extrapolate')
+q_cycle = np.concatenate([q_act, q_act[:, ::-1]], axis=1)   # forward + backward
+cycle_dur = 2 * trj_dur
+t_nodes   = np.linspace(0.0, cycle_dur, q_cycle.shape[1])
+trj_interp = interp1d(t_nodes, q_cycle, axis=1, kind='linear', fill_value='extrapolate')
 
 def get_postural_map(t_global: float) -> dict:
     """Return {joint_name: angle} for all actuated joints at time t (cyclic)."""
-    t_mod = t_global % _cycle_dur
-    q_now = _trj_interp(t_mod)   # (n_actuated,)
-    return {name: float(q_now[i]) for i, name in enumerate(_jnames)}
+    t_mod = t_global % cycle_dur
+    q_now = trj_interp(t_mod)
+    return {name: float(q_now[i]) for i, name in enumerate(jnames)}
 
-def get_ee_pose_from_postural(t: float) -> Affine3:
-    """
-    Compute the EE pose (Affine3) at time t along the postural trajectory.
-    """
-    postural_map = get_postural_map(t)
-    model.setJointPosition(postural_map)
-    model.update()
-    return model.getPose(ee_distal, ee_base)
-
-def get_ee_pose_from_postural(postural_map: dict) -> Affine3:
+def get_ee_pose_from_postural(model_target, postural_map: dict) -> Affine3:
     """
     Compute the EE pose (Affine3) for a given postural joint map, using a temporary model.
     """
-    # Clone the model to avoid overwriting the main solver state
-    tmp_model = xbi.ModelInterface2(urdf, srdf, 'pin')
-    tmp_model.setJointPosition(postural_map)
-    tmp_model.update()
-    return tmp_model.getPose(ee_distal, ee_base)
+    model_target.setJointPosition(postural_map)
+    model_target.update()
+    return model_target.getPose(ee_distal, ee_base)
 
 print("[controller] Trajectory interpolator ready.")
 
@@ -126,28 +111,7 @@ print("[controller] Trajectory interpolator ready.")
 print("[controller] Waiting for robot_description ROS parameters …")
 rclpy.init()
 
-_spin_node     = rclpy.create_node('controller_spin')
-_spin_executor = rclpy.executors.SingleThreadedExecutor()
-_spin_executor.add_node(_spin_node)
-_spin_thread   = threading.Thread(target=_spin_executor.spin, daemon=True)
-_spin_thread.start()
-
-def _fetch_robot_description():
-    node   = rclpy.create_node('controller_urdf_reader')
-    client = node.create_client(GetParameters, '/robot_description_publisher/get_parameters')
-    if not client.wait_for_service(timeout_sec=15.0):
-        raise RuntimeError("[controller] /robot_description_publisher not available. Is the simulation running?")
-    req       = GetParameters.Request()
-    req.names = ['robot_description', 'robot_description_semantic']
-    future    = client.call_async(req)
-    rclpy.spin_until_future_complete(node, future, timeout_sec=15.0)
-    node.destroy_node()
-    if future.result() is None:
-        raise RuntimeError("[controller] Failed to read robot_description parameters.")
-    vals = future.result().values
-    return vals[0].string_value, vals[1].string_value
-
-urdf, srdf = _fetch_robot_description()
+urdf, srdf = fetch_robot_description('controller_urdf_reader')
 print("[controller] URDF and SRDF received.")
 
 # ── Build ConfigOptions for RobotInterface2 ───────────────────────────────────
@@ -168,8 +132,10 @@ robot_joint_names = set(robot_q_map.keys())
 print(f"[controller] Robot joint names ({len(robot_joint_names)}): {sorted(robot_joint_names)}")
 print(f"[controller] Robot joint positions: {robot_q_map}")
 
+
 # ── Build ModelInterface2 for the standalone solver ───────────────────────────
 model = xbi.ModelInterface2(urdf, srdf, 'pin')
+model_shadow = xbi.ModelInterface2(urdf, srdf, 'pin')
 
 # Sync model to robot: actuated joints
 model.setJointPosition(robot_q_map)
@@ -177,17 +143,15 @@ model.update()
 
 # ── Homing phase: move robot to trajectory node-0 ────────────────────────────
 # q_home_act: actuated joint targets from node-0 of the mat trajectory
-_q_home_act = _q_act[:, 0]  # (n_actuated,)
-q_home_map  = {name: float(_q_home_act[i]) for i, name in enumerate(_jnames)}
+q_home_act = q_act[:, 0]  # (n_actuated,)
+q_home_map  = {name: float(q_home_act[i]) for i, name in enumerate(jnames)}
 
 # Current actuated joint positions (from robot sense)
-robot.sense()
 q_cur_map = robot.qToMap(robot.getPositionReferenceFeedback())
 
 # Only home the joints that exist both in the trajectory and on the robot
 home_joints = {k: v for k, v in q_home_map.items() if k in q_cur_map}
 print(f"[controller] Homing to node-0 over {HOMING_DURATION}s …")
-print(f"[controller] Home target: {home_joints}")
 
 homing_steps = int(HOMING_DURATION / DT)
 for step in range(homing_steps):
@@ -200,10 +164,40 @@ for step in range(homing_steps):
     robot.move()
     sleep(DT)
 
-robot.sense()
+i = 0
+for i in range(10):  # extra sense cycles at the end for better convergence
+    robot.sense()
+    i+=1
+
+motor_pos = robot.getJointPosition() # no getMotorPosition()
+motor_map = robot.qToMap(motor_pos)
+for name, j in motor_map.items():
+    print(f"{name}: {j}")
+# Joint error (for actuated joints in home_joints)
+joint_err = {k: interp_map[k] - motor_map[k] for k in home_joints}
+
+# Pretty print joint errors
+print("[JOINT ERROR]")
+for joint, err in joint_err.items():
+    print(f"    {joint:20s}: {err:+.6f}")
+
+# EE error
+model.setJointPosition(interp_map)
+model.update()
+ee_pos_des = model.getPose('ee_F', 'world').translation
+
+model.setJointPosition(motor_map)
+model.update()
+ee_pos_cur = model.getPose('ee_F', 'world').translation
+
+ee_err = ee_pos_des - ee_pos_cur
+print(f"[EE ERROR] err={ee_err}, |err|={np.linalg.norm(ee_err)}")
+
 print("[controller] Homing complete.")
 
-# Re-sync model to the post-homing robot state
+exit()
+
+# Re-sync model to the post-homing robot state for building the CartesianInterface
 robot_q_map = robot.qToMap(robot.getPositionReferenceFeedback())
 model.setJointPosition(robot_q_map)
 model.update()
@@ -232,12 +226,10 @@ T_start = model.getPose(ee_distal, ee_base)
 gap_y = GAP_Y
 print(f"[controller] Gap Y (from pipe center): {gap_y:.4f} m")
 
-omega = 2.0 * math.pi / TRJ_PERIOD
-
 # ── PD state ─────────────────────────────────────────────────────────────────
 prev_pos_err = np.zeros(3)   # world-frame position error at previous tick
 
-print("[controller] Starting PD control loop …")
+# print("[controller] Starting PD control loop …")
 
 # ── Control loop ──────────────────────────────────────────────────────────────
 t = 0.0
@@ -253,7 +245,7 @@ while True:
     postural_task.setReferencePosture(postural_map)
 
     # ── Compute desired EE pose from postural (XZ and orientation from postural, Y clamped)
-    ee_pose_des = get_ee_pose_from_postural(postural_map)
+    ee_pose_des = get_ee_pose_from_postural(model_shadow, postural_map)
     ee_pose_des.translation[1] = gap_y  # Clamp Y to the gap
 
      # ── PD law (world frame) ──────────────────────────────────────────────    
@@ -263,10 +255,9 @@ while True:
 
     robot.sense()
     q_map_robot = robot.qToMap(robot.getMotorPosition())
-    tmp_model = xbi.ModelInterface2(urdf, srdf, 'pin')
-    tmp_model.setJointPosition(q_map_robot)
-    tmp_model.update()
-    ee_pose_cur = tmp_model.getPose(ee_distal, ee_base)
+    model_shadow.setJointPosition(q_map_robot)
+    model_shadow.update()
+    ee_pose_cur = model_shadow.getPose(ee_distal, ee_base)
     ee_pos_cur = ee_pose_cur.translation
 
     # ── (Optional) Estimate y_dot_cur (numerical derivative)

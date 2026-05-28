@@ -11,6 +11,9 @@ Usage:
 
 import os
 from pathlib import Path
+import sys
+
+import scipy
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -29,13 +32,20 @@ GZ_RESOURCE_PATH = str(PATH_TO_CONCERT_WS / "install" / "share")
 PIPE_RADIUS  = 0.5    # [m] outer radius of each pipe section
 PIPE_LENGTH  = 2.45   # [m] length of each half-pipe
 PIPE_GAP     = 0.01   # [m] gap between the two halves (at y=0)
-PIPE_X       = 2.5    # [m] distance in front of the robot
+PIPE_X       = 1.5    # [m] distance in front of the robot
 PIPE_Z       = 1.5    # [m] height above ground
-
 # Derived: centre of each half = half_length + half_gap
 _pipe_y = PIPE_LENGTH / 2.0 + PIPE_GAP / 2.0
 # ─────────────────────────────────────────────────────────────────────────────
 
+matfile_path = '/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat'
+matdata = scipy.io.loadmat(matfile_path)
+if not os.path.exists(matfile_path):
+  print(f"File not found: {matfile_path}")
+  sys.exit(1)
+
+init_pos_robot = matdata['initial_robot_pose'][0]
+# ─────────────────────────────────────────────────────────────────────────────
 PIPE_SDF_TEMPLATE = """<?xml version="1.0" ?>
 <sdf version="1.6">
   <model name="{{name}}">
@@ -112,8 +122,8 @@ def generate_launch_description():
                     name="spawn_weld_pipe_left",
                     arguments=[
                         "-string", PIPE_SDF_LEFT,
-                        "-x", str(PIPE_X),
-                        "-y", str(-_pipe_y),
+                        "-x", str(PIPE_X - init_pos_robot[0]),
+                        "-y", str(_pipe_y - init_pos_robot[1]),
                         "-z", str(PIPE_Z),
                         "-R", "1.5708",
                         "-P", "0.0",
@@ -132,8 +142,8 @@ def generate_launch_description():
                     name="spawn_weld_pipe_right",
                     arguments=[
                         "-string", PIPE_SDF_RIGHT,
-                        "-x", str(PIPE_X),
-                        "-y", str(+_pipe_y),
+                        "-x", str(PIPE_X - init_pos_robot[0]),
+                        "-y", str(- _pipe_y - init_pos_robot[1]),
                         "-z", str(PIPE_Z),
                         "-R", "1.5708",
                         "-P", "0.0",

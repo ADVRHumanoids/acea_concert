@@ -98,6 +98,8 @@ class TrajectoryReplayer:
         
         if self.solution_augmented is not None:
             q_forward = self.solution_augmented['q']
+        else:
+            q_forward = self.data['q']
             q_backward = np.flip(q_forward, axis=1)
             q_cycle = np.concatenate([q_forward, q_backward], axis=1)
 
@@ -214,9 +216,10 @@ if __name__ == '__main__':
     data = scipy.io.loadmat(matfile)
     xbot_horizon_replayer = TrajectoryReplayer(data)
     xbot_horizon_replayer.init_robot_state_publisher()
-    xbot_horizon_replayer.add_wiggling_ee_y(nodes=200,
-                                            t_max=2,
-                                            wiggle_amplitude=0.01, 
-                                            wiggle_frequency=200*np.pi)  # Resample to 100 nodes for smoother replay
+    xbot_horizon_replayer.init_scene()
+    # xbot_horizon_replayer.add_wiggling_ee_y(nodes=200,
+                                            # t_max=2,
+                                            # wiggle_amplitude=0.01, 
+                                            # wiggle_frequency=200*np.pi)  # Resample to 100 nodes for smoother replay
 
     xbot_horizon_replayer.replay()

@@ -15,6 +15,7 @@ class RectangleMarkerPublisher(Node):
         self.name = name
         self.cx = cx
         self.cy = cy
+        self.cz = 0.0
         self.size_x = size_x
         self.size_y = size_y
         self.frame = frame
@@ -22,7 +23,6 @@ class RectangleMarkerPublisher(Node):
         self.color_g = color_g
         self.color_b = color_b
         self.color_a = color_a
-        self.cz = 0.1  # Slightly above ground
         self.pub = self.create_publisher(Marker, f'/{name}', 10)
 
     def publish_once(self):

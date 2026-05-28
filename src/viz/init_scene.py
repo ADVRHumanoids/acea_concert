@@ -20,7 +20,7 @@ class InitScene:
     def kill_existing_markers(self):
 
         subprocess.run("pkill -f rviz_pipe_marker.py", shell=True)
-        subprocess.run("pkill -f rviz_rectangle.py", shell=True)
+        subprocess.run("pkill -f rviz_rectangle_marker.py", shell=True)
         subprocess.run("pkill -f rviz_line_marker.py", shell=True)
 
     def launch_scene(self):

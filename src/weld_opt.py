@@ -73,12 +73,12 @@ footprint_robot_x = 1.2
 footprint_robot_y = 0.7
 
 length_pipe = 5.0
-pos_center_pipe = [1.5, 0.0, 0.75]
+pos_center_pipe = [1.5, 0.0, 1.5]
 orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
 radius_pipe = 0.5
 # first half
 angle_weld_start = 1/2 *np.pi
-angle_weld_end = np.pi # 3/2 * np.pi #2 * np.pi
+angle_weld_end = 4/5 * np.pi # 3/2 * np.pi #2 * np.pi
 
 # second half
 # angle_weld_start = np.pi
@@ -153,6 +153,9 @@ q_init = {
     'J3_F': 0.0,
 }
 
+fk_base_link_projected_pos = kin_dyn.fk('base_link_projected')(q=kin_dyn.mapToQ(q_init))['ee_pos'][:, 0]
+base_init[2] = - fk_base_link_projected_pos[2] 
+
 model = FullModelInverseDynamics(problem=prb,
                                  kd=kin_dyn,
                                  q_init=q_init,
@@ -165,6 +168,8 @@ ti.setTaskFromYaml(horizon_config)
 # Print initial FK vs desired for user awareness (after model and ti are defined)
 fk_ee_pos = kin_dyn.fk('ee_F')(q=model.q0)['ee_pos'][:, 0]
 fk_ee_rot = R.from_matrix((kin_dyn.fk('ee_F')(q=model.q0)['ee_rot'].full())).as_quat()
+
+
 
 print(f"[INFO] Initial ee_F pos: {fk_ee_pos}, rot (quat): {fk_ee_rot}")
 
@@ -188,7 +193,7 @@ print(f"angle range: [{angle_weld_start}, {angle_weld_end}] rad, steps: {ns + 1}
 
 # Set base pose in XZ plane and pitch-only orientation (pitch=0)
 tmp_q0 = ti.model.q0.copy()
-tmp_q0[2] = 0.0  # Z (set to desired height if needed)
+tmp_q0[2] = base_init[2]  # Z (set to desired height if needed)
 pitch_angle = 0.0  # Set to desired pitch in radians
 base_quat = R.from_euler('y', pitch_angle).as_quat()  # [x, y, z, w]
 tmp_q0[3:7] = base_quat  # Set quaternion part

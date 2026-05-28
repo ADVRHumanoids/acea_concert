@@ -30,7 +30,7 @@ PIPE_RADIUS  = 0.5    # [m] outer radius of each pipe section
 PIPE_LENGTH  = 2.45   # [m] length of each half-pipe
 PIPE_GAP     = 0.01   # [m] gap between the two halves (at y=0)
 PIPE_X       = 2.5    # [m] distance in front of the robot
-PIPE_Z       = 1.0    # [m] height above ground
+PIPE_Z       = 1.5    # [m] height above ground
 
 # Derived: centre of each half = half_length + half_gap
 _pipe_y = PIPE_LENGTH / 2.0 + PIPE_GAP / 2.0

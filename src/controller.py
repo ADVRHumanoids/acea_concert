@@ -26,6 +26,7 @@ from xbot2_interface import pyxbot2_interface as xbi
 from xbot2_interface.pyaffine3 import Affine3
 from cartesian_interface import pyci
 
+import scipy, os
 # ── Parameters ───────────────────────────────────────────────────────────────
 TASK_NAME   = 'ee_F'   # CartesIO task name for the welding end-effector
 DT          = 0.01     # [s]   controller dt (100 Hz)
@@ -38,15 +39,17 @@ TRJ_HALF    = 0.40     # [m]   half-stroke
 TRJ_PERIOD  = 10.0     # [s]   period of one full cycle
 
 # ── PD gains (world frame, per axis [x, y, z]) ───────────────────────────────
-KP_XYZ = [1.0, 2.0, 1.0]    # proportional [1/s]
+KP_XYZ = [1.0, 200.0, 1.0]    # proportional [1/s]
 KD_XYZ = [0.05, 0.1, 0.05]  # derivative   [s]
+KI_XYZ = [1.0, 1.0, 1.0]  # integral   [s]
+MAX_Y_VEL = 1000.0          # [m/s] cap for the gap correction velocity
 
 # ── Trajectory slowdown factor ───────────────────────────────────────────────
 TRAJ_SLOWDOWN = 12.0  # 1.0 = normal speed, 2.0 = half speed, etc.
+
 # ── Gap Y target ─────────────────────────────────────────────────────────────
-# Set to None to use the robot's initial EE Y as the gap level,
-# or set explicitly, e.g. Y_GAP = 0.35 (world-frame metres).
-Y_GAP: float | None = None
+# GAP_Y is computed from the mat-file initial robot Y so it matches the pipe
+# gap placement used by weld_sim.launch.py.
 
 # Path to the CartesIO problem description YAML
 CARTESIO_YAML = Path('/home/user/concert_ws/src/acea_concert/config/cartesio_stack.yaml')
@@ -55,11 +58,14 @@ CARTESIO_YAML = Path('/home/user/concert_ws/src/acea_concert/config/cartesio_sta
 MAT_FILE = Path('/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat')
 
 # --- Pipe and gap parameters (match weld_sim.launch.py) ---
-GAP_Y = 0.0  # The gap plane is at y=0 in simulation
 
 # ── Load weld_opt trajectory from mat file ────────────────────────────────────
 print(f"[controller] Loading trajectory from {MAT_FILE} …")
 mat_data = loadmat(str(MAT_FILE))
+
+init_pos_robot = mat_data['initial_robot_pose'][0]
+GAP_Y = - init_pos_robot[1]
+print(f"[controller] Gap Y (from pipe center): {GAP_Y:.4f} m")
 
 # q: (nq x N_nodes) — full model joint vector (floating base + actuated)
 # joint_names: casadi_kin_dyn list — starts with virtual joints ('universe',
@@ -218,19 +224,13 @@ ee_distal = ee_task.getDistalLink()
 ee_base   = ee_task.getBaseLink()
 print(f"[controller] Task '{TASK_NAME}': {ee_base} → {ee_distal}")
 
-# ── Get XZ plane for the welding ─────────────────────────────────────────────
-T_start = model.getPose(ee_distal, ee_base)
-
-# Resolve gap Y: use startup Y if not set explicitly
-gap_y = GAP_Y
-print(f"[controller] Gap Y (from pipe center): {gap_y:.4f} m")
-
 # ── PD state ─────────────────────────────────────────────────────────────────
-prev_pos_err = np.zeros(3)   # world-frame position error at previous tick
+prev_y_err = None            # world-frame Y error at previous tick
 
 # print("[controller] Starting PD control loop …")
 
 # ── Control loop ──────────────────────────────────────────────────────────────
+y_err_integral = 0.0
 t = 0.0
 input("[controller] Press Enter to start the control loop.")
 while True:
@@ -243,15 +243,7 @@ while True:
     postural_map = get_postural_map(t_traj)
     postural_task.setReferencePosture(postural_map)
 
-    # ── Compute desired EE pose from postural (XZ and orientation from postural, Y clamped)
-    ee_pose_des = get_ee_pose_from_postural(model_shadow, postural_map)
-    # ee_pose_des.translation[1] = gap_y  # Clamp Y to the gap
-
-     # ── PD law (world frame) ──────────────────────────────────────────────    
-    ee_pose_cur = model.getPose(ee_distal, ee_base)
-    y_cur = ee_pose_cur.translation[1]
-
-
+    # ── Sense actual robot state for feedback ──────────────────────────────
     robot.sense()
     q_map_robot = robot.qToMap(robot.getJointPosition())
     model_shadow.setJointPosition(q_map_robot)
@@ -259,30 +251,26 @@ while True:
     ee_pose_cur = model_shadow.getPose(ee_distal, ee_base)
     ee_pos_cur = ee_pose_cur.translation
 
-    # ── (Optional) Estimate y_dot_cur (numerical derivative)
-    # if 'y_prev' not in locals():
-        # y_prev = y_cur
-        # y_dot_cur = 0.0
-    # else:
-        # y_dot_cur = (y_cur - y_prev) / DT
-        # y_prev = y_cur
+    # ── Desired EE pose: X/Z/orientation from postural, Y locked to the gap ─
+    ee_pose_des = get_ee_pose_from_postural(model_shadow, postural_map)
+    ee_pose_des.translation[1] = GAP_Y
 
-    # ── PD control for Y
-    # pos_err  = prev_pos_err
-    # vel_err  = (pos_err - prev_pos_err) / DT   # numerical derivative of error
-    # prev_pos_err = pos_err.copy()
+    # ── Y-only PD correction in the task base/world frame ──────────────────
+    y_err = GAP_Y - ee_pos_cur[1] + 0.2
+    y_err_dot = 0.0 #if prev_y_err is None else (y_err - prev_y_err) / DT
+    y_err_integral += y_err  # Integrate error
 
-    # KP = np.array(KP_XYZ)
-    # KD = np.array(KD_XYZ)
+    prev_y_err = y_err
 
-    # Cartesian velocity command [vx, vy, vz] in world frame
-    # v_cmd = np.array([0.0, 0.0, 0.0]) \
-            # + KP * pos_err \
-            # + KD * vel_err
+    vy_cmd = KP_XYZ[1] * y_err #+ KD_XYZ[1] * y_err_dot + KI_XYZ[1] * y_err_integral
+    vy_cmd = float(np.clip(vy_cmd, -MAX_Y_VEL, MAX_Y_VEL))
 
-    # ── Send pose and velocity reference
-    ee_task.setPoseReference(ee_pose_des)
-    # ee_task.setVelocityReference(v_cmd)
+    # Instead of using setVelocityReference, add vy_cmd * DT to the Y position of the pose
+    ee_pose_des_mod = ee_pose_des.copy()
+    val_correction = vy_cmd * DT
+    print(f"val_correction: {val_correction}")
+    # ee_pose_des_mod.translation[1] += val_correction
+    ee_task.setPoseReference(ee_pose_des_mod)
 
     # ── IK step — writes model.v ─────────────────────────────────────────
     ci.update(t, DT)
@@ -298,10 +286,13 @@ while True:
     # --- Print error between actual and desired EE pose (position only) ---
     ee_pos_des = ee_pose_des.translation
     ee_pos_cur = ee_pose_cur.translation
+    ee_pos_des_mod = ee_pose_des_mod.translation
     ee_err = ee_pos_des - ee_pos_cur
+    print(f"GAP Y: {GAP_Y:.4f} m")
     print(f"[EE DES] [{ee_pos_des[0]:.4f}, {ee_pos_des[1]:.4f}, {ee_pos_des[2]:.4f}] m")
+    print(f"[EE DES_MOD] [{ee_pos_des_mod[0]:.4f}, {ee_pos_des_mod[1]:.4f}, {ee_pos_des_mod[2]:.4f}] m")
     print(f"[EE CUR] [{ee_pos_cur[0]:.4f}, {ee_pos_cur[1]:.4f}, {ee_pos_cur[2]:.4f}] m")
-    print(f"[EE ERR] [{ee_err[0]:+.4f}, {ee_err[1]:+.4f}, {ee_err[2]:+.4f}] m")
+    print(f"[EE ERR] [{ee_err[0]:+.4f}, {ee_err[1]:+.4f}, {ee_err[2]:+.4f}] m, vy_cmd={vy_cmd:+.4f} m/s")
 
     t += DT
 

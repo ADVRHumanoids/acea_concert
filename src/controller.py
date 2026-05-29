@@ -195,7 +195,6 @@ print(f"[EE ERROR] err={ee_err}, |err|={np.linalg.norm(ee_err)}")
 
 print("[controller] Homing complete.")
 
-exit()
 
 # Re-sync model to the post-homing robot state for building the CartesianInterface
 robot_q_map = robot.qToMap(robot.getPositionReferenceFeedback())
@@ -246,7 +245,7 @@ while True:
 
     # ── Compute desired EE pose from postural (XZ and orientation from postural, Y clamped)
     ee_pose_des = get_ee_pose_from_postural(model_shadow, postural_map)
-    ee_pose_des.translation[1] = gap_y  # Clamp Y to the gap
+    # ee_pose_des.translation[1] = gap_y  # Clamp Y to the gap
 
      # ── PD law (world frame) ──────────────────────────────────────────────    
     ee_pose_cur = model.getPose(ee_distal, ee_base)
@@ -254,7 +253,7 @@ while True:
 
 
     robot.sense()
-    q_map_robot = robot.qToMap(robot.getMotorPosition())
+    q_map_robot = robot.qToMap(robot.getJointPosition())
     model_shadow.setJointPosition(q_map_robot)
     model_shadow.update()
     ee_pose_cur = model_shadow.getPose(ee_distal, ee_base)
@@ -300,7 +299,9 @@ while True:
     ee_pos_des = ee_pose_des.translation
     ee_pos_cur = ee_pose_cur.translation
     ee_err = ee_pos_des - ee_pos_cur
-    print(f"[EE ERROR] t={t:7.3f}s | des=[{ee_pos_des[0]:.4f}, {ee_pos_des[1]:.4f}, {ee_pos_des[2]:.4f}] | cur=[{ee_pos_cur[0]:.4f}, {ee_pos_cur[1]:.4f}, {ee_pos_cur[2]:.4f}] | err=[{ee_err[0]:+.4f}, {ee_err[1]:+.4f}, {ee_err[2]:+.4f}] | |err|={np.linalg.norm(ee_err):.4f} m")
+    print(f"[EE DES] [{ee_pos_des[0]:.4f}, {ee_pos_des[1]:.4f}, {ee_pos_des[2]:.4f}] m")
+    print(f"[EE CUR] [{ee_pos_cur[0]:.4f}, {ee_pos_cur[1]:.4f}, {ee_pos_cur[2]:.4f}] m")
+    print(f"[EE ERR] [{ee_err[0]:+.4f}, {ee_err[1]:+.4f}, {ee_err[2]:+.4f}] m")
 
     t += DT
 

@@ -103,6 +103,18 @@ def main():
         action="store_true",
         help="Print Gazebo commands without running them.",
     )
+    parser.add_argument(
+        "--ramp-time",
+        type=float,
+        default=0.0,
+        help="Ramp up the wrench over this many seconds (default: 0, no ramp).",
+    )
+    parser.add_argument(
+        "--ramp-steps",
+        type=int,
+        default=20,
+        help="Number of steps for the ramp (default: 20).",
+    )
     args = parser.parse_args()
 
     if shutil.which("gz") is None:
@@ -131,6 +143,28 @@ def main():
 
     if args.oneshot:
         run_gz_topic(prefix, "gz.msgs.EntityWrench", payload, args.dry_run)
+        return 0
+
+    # Ramping logic
+    if args.ramp_time > 0.0:
+        ramp_steps = args.ramp_steps
+        for i in range(1, ramp_steps + 1):
+            frac = i / ramp_steps
+            ramp_force = tuple(frac * f for f in force)
+            ramp_torque = tuple(frac * t for t in torque)
+            ramp_payload = (
+                f"entity: {{name: '{entity_name}', type: {args.entity_type}}}, "
+                f"wrench: {{{fmt_vec('force', ramp_force)}, {fmt_vec('torque', ramp_torque)}}}"
+            )
+            run_gz_topic(f"{prefix}/persistent", "gz.msgs.EntityWrench", ramp_payload, args.dry_run)
+            sleep(args.ramp_time / ramp_steps)
+        # After ramp, hold at full value for the remaining duration
+        hold_time = max(0.0, args.duration - args.ramp_time)
+        if hold_time > 0.0:
+            print(f"Holding wrench at full value for {hold_time:g} s...")
+            if not args.dry_run:
+                sleep(hold_time)
+        run_gz_topic(f"{prefix}/clear", "gz.msgs.Entity", clear_payload, args.dry_run)
         return 0
 
     run_gz_topic(f"{prefix}/persistent", "gz.msgs.EntityWrench", payload, args.dry_run)

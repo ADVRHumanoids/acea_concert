@@ -20,6 +20,10 @@ import numpy as np
 from scipy.io import loadmat
 from scipy.interpolate import interp1d
 import rclpy
+from rclpy.node import Node
+from geometry_msgs.msg import PoseStamped, PointStamped, QuaternionStamped
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Header
 
 from utils.ros_utils import fetch_robot_description
 from xbot2_interface import pyxbot2_interface as xbi
@@ -39,10 +43,10 @@ TRJ_HALF    = 0.40     # [m]   half-stroke
 TRJ_PERIOD  = 10.0     # [s]   period of one full cycle
 
 # ── PD gains (world frame, per axis [x, y, z]) ───────────────────────────────
-KP_XYZ = [1.0, 200.0, 1.0]    # proportional [1/s]
+KP_XYZ = [1.0, 30.0, 1.0]    # proportional [1/s]
 KD_XYZ = [0.05, 0.1, 0.05]  # derivative   [s]
-KI_XYZ = [1.0, 1.0, 1.0]  # integral   [s]
-MAX_Y_VEL = 1000.0          # [m/s] cap for the gap correction velocity
+KI_XYZ = [1.0, 0.1, 1.0]  # integral   [s]
+MAX_Y_VEL = 10.0          # [m/s] cap for the gap correction velocity
 
 # ── Trajectory slowdown factor ───────────────────────────────────────────────
 TRAJ_SLOWDOWN = 12.0  # 1.0 = normal speed, 2.0 = half speed, etc.
@@ -117,6 +121,41 @@ print("[controller] Trajectory interpolator ready.")
 print("[controller] Waiting for robot_description ROS parameters …")
 rclpy.init()
 
+# ── Publishers for PlotJuggler ─────────────────────────────────────────────
+_plot_node = rclpy.create_node('controller_plot')
+_pub_des  = _plot_node.create_publisher(PoseStamped, '/ee/desired', 10)
+_pub_sent = _plot_node.create_publisher(PoseStamped, '/ee/sent',    10)
+_pub_cur  = _plot_node.create_publisher(PoseStamped, '/ee/current', 10)
+_pub_ik   = _plot_node.create_publisher(PoseStamped,  '/ee/ik',            10)
+_pub_js   = _plot_node.create_publisher(JointState,   '/controller/joints', 10)
+
+def _publish_joint_state(pub, joint_map):
+    """Publish a dict {name: position} as JointState."""
+    msg = JointState()
+    msg.header = Header()
+    msg.header.stamp = _plot_node.get_clock().now().to_msg()
+    msg.name     = list(joint_map.keys())
+    msg.position = [float(v) for v in joint_map.values()]
+    pub.publish(msg)
+
+def _publish_pose(pub, affine):
+    """Publish an Affine3 as PoseStamped (position + quaternion)."""
+    msg = PoseStamped()
+    msg.header = Header()
+    msg.header.stamp = _plot_node.get_clock().now().to_msg()
+    msg.header.frame_id = 'world'
+    xyz = affine.translation
+    q   = affine.quaternion  # [x, y, z, w]
+    msg.pose.position.x = float(xyz[0])
+    msg.pose.position.y = float(xyz[1])
+    msg.pose.position.z = float(xyz[2])
+    msg.pose.orientation.x = float(q[0])
+    msg.pose.orientation.y = float(q[1])
+    msg.pose.orientation.z = float(q[2])
+    msg.pose.orientation.w = float(q[3])
+    pub.publish(msg)
+# ──────────────────────────────────────────────────────────────────────────────
+
 urdf, srdf = fetch_robot_description('controller_urdf_reader')
 print("[controller] URDF and SRDF received.")
 
@@ -170,10 +209,7 @@ for step in range(homing_steps):
     robot.move()
     sleep(DT)
 
-i = 0
-for i in range(10):  # extra sense cycles at the end for better convergence
-    robot.sense()
-    i+=1
+robot.sense()
 
 motor_pos = robot.getJointPosition() # no getMotorPosition()
 motor_map = robot.qToMap(motor_pos)
@@ -190,17 +226,16 @@ for joint, err in joint_err.items():
 # EE error
 model.setJointPosition(interp_map)
 model.update()
-ee_pos_des = model.getPose('ee_F', 'world').translation
+ee_pose_des = model.getPose('ee_F', 'world')
 
 model.setJointPosition(motor_map)
 model.update()
-ee_pos_cur = model.getPose('ee_F', 'world').translation
+ee_pose_cur = model.getPose('ee_F', 'world')
 
-ee_err = ee_pos_des - ee_pos_cur
+ee_err = ee_pose_des.translation - ee_pose_cur.translation
 print(f"[EE ERROR] err={ee_err}, |err|={np.linalg.norm(ee_err)}")
 
 print("[controller] Homing complete.")
-
 
 # Re-sync model to the post-homing robot state for building the CartesianInterface
 robot_q_map = robot.qToMap(robot.getPositionReferenceFeedback())
@@ -222,15 +257,19 @@ postural_task = ci.getTask('Postural')
 ee_task = ci.getTask(TASK_NAME)
 ee_distal = ee_task.getDistalLink()
 ee_base   = ee_task.getBaseLink()
-print(f"[controller] Task '{TASK_NAME}': {ee_base} → {ee_distal}")
+print(f"[controller] Task '{TASK_NAME}': {ee_distal} → {ee_base}")
+
+# ── initial pose  ────────────────────────────────────────────────────────────
+
+initial_ee_pose = model.getPose(ee_distal, ee_base).copy()
 
 # ── PD state ─────────────────────────────────────────────────────────────────
 prev_y_err = None            # world-frame Y error at previous tick
-
+y_err_integral = 0.0
 # print("[controller] Starting PD control loop …")
 
 # ── Control loop ──────────────────────────────────────────────────────────────
-y_err_integral = 0.0
+
 t = 0.0
 input("[controller] Press Enter to start the control loop.")
 while True:
@@ -249,28 +288,30 @@ while True:
     model_shadow.setJointPosition(q_map_robot)
     model_shadow.update()
     ee_pose_cur = model_shadow.getPose(ee_distal, ee_base)
-    ee_pos_cur = ee_pose_cur.translation
+    ee_pos_cur = ee_pose_cur.translation # + 0.2 * np.array([0.0, 1.0, 0.0])
 
-    # ── Desired EE pose: X/Z/orientation from postural, Y locked to the gap ─
     ee_pose_des = get_ee_pose_from_postural(model_shadow, postural_map)
-    ee_pose_des.translation[1] = GAP_Y
+    ee_pos_des = ee_pose_des.translation
 
-    # ── Y-only PD correction in the task base/world frame ──────────────────
-    y_err = GAP_Y - ee_pos_cur[1] + 0.2
-    y_err_dot = 0.0 #if prev_y_err is None else (y_err - prev_y_err) / DT
-    y_err_integral += y_err  # Integrate error
+    ## test: add a sinusoidal offset in world Y to the EE reference, to simulate a gap correction
+    world_y_in_ee = np.array([0.0, 1.0, 0.0]) #  initial_ee_pose.linear.T @
+    Y_TEST_AMP = 0.1
+    y_test_offset = Y_TEST_AMP * math.sin(2 * math.pi * t / TRJ_PERIOD) * world_y_in_ee
+    ee_pose_des.translation += y_test_offset
 
-    prev_y_err = y_err
+    # ── Y P correction ─
+    # y_err = (ee_pos_des - ee_pos_cur)[1]
+    # y_err_dot = 0.0 if prev_y_err is None else (y_err - prev_y_err) / DT
+    # y_err_integral += y_err * DT
+    # prev_y_err = y_err
 
-    vy_cmd = KP_XYZ[1] * y_err #+ KD_XYZ[1] * y_err_dot + KI_XYZ[1] * y_err_integral
-    vy_cmd = float(np.clip(vy_cmd, -MAX_Y_VEL, MAX_Y_VEL))
+    # vy_cmd = KP_XYZ[1] * y_err  # + KD_XYZ[1] * y_err_dot + KI_XYZ[1] * y_err_integral
+    # vy_cmd = float(np.clip(vy_cmd, -MAX_Y_VEL, MAX_Y_VEL))
+    # Closed-loop tracking: move from current Y toward desired Y
+    # ee_pose_des_mod = ee_pose_des.copy()
+    # ee_pose_des_mod.translation[1] = ee_pos_cur[1] + vy_cmd * DT
 
-    # Instead of using setVelocityReference, add vy_cmd * DT to the Y position of the pose
-    ee_pose_des_mod = ee_pose_des.copy()
-    val_correction = vy_cmd * DT
-    print(f"val_correction: {val_correction}")
-    # ee_pose_des_mod.translation[1] += val_correction
-    ee_task.setPoseReference(ee_pose_des_mod)
+    ee_task.setPoseReference(ee_pose_des)
 
     # ── IK step — writes model.v ─────────────────────────────────────────
     ci.update(t, DT)
@@ -283,19 +324,25 @@ while True:
     robot.setPositionReference(model.getJointPosition())
     robot.move()
 
-    # --- Print error between actual and desired EE pose (position only) ---
-    ee_pos_des = ee_pose_des.translation
-    ee_pos_cur = ee_pose_cur.translation
-    ee_pos_des_mod = ee_pose_des_mod.translation
-    ee_err = ee_pos_des - ee_pos_cur
-    print(f"GAP Y: {GAP_Y:.4f} m")
-    print(f"[EE DES] [{ee_pos_des[0]:.4f}, {ee_pos_des[1]:.4f}, {ee_pos_des[2]:.4f}] m")
-    print(f"[EE DES_MOD] [{ee_pos_des_mod[0]:.4f}, {ee_pos_des_mod[1]:.4f}, {ee_pos_des_mod[2]:.4f}] m")
-    print(f"[EE CUR] [{ee_pos_cur[0]:.4f}, {ee_pos_cur[1]:.4f}, {ee_pos_cur[2]:.4f}] m")
-    print(f"[EE ERR] [{ee_err[0]:+.4f}, {ee_err[1]:+.4f}, {ee_err[2]:+.4f}] m, vy_cmd={vy_cmd:+.4f} m/s")
+    # ── Publish model joint trajectory ───────────────────────────────────
+    _publish_joint_state(_pub_js, model.qToMap(model.getJointPosition()))
+
+    # ── IK output EE pose ────────────────────────────────────────────────
+    ee_pose_ik = model.getPose(ee_distal, ee_base)
+
+    robot.sense()
+    q_map_robot = robot.qToMap(robot.getJointPosition())
+    model_shadow.setJointPosition(q_map_robot)
+    model_shadow.update()
+    ee_pose_cur = model_shadow.getPose(ee_distal, ee_base)
+
+    # ── Publish to PlotJuggler topics ─────────────────────────────────────
+    _publish_pose(_pub_des,  ee_pose_des)
+    _publish_pose(_pub_ik,   ee_pose_ik)
+    _publish_pose(_pub_cur,  ee_pose_cur)
 
     t += DT
 
-    # ── 13) Pace the loop ─────────────────────────────────────────────────────
+    # ── Pace the loop ─────────────────────────────────────────────────────
     elapsed = perf_counter() - t0
     sleep(max(0.0, DT - elapsed))

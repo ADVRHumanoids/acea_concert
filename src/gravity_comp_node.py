@@ -29,9 +29,11 @@ class GravityCompNode(Node):
         # ── Create RobotInterface2 and sense initial state ────────────────────────────
         print("[controller] Connecting to RobotInterface2 …")
         self.robot = xbi.RobotInterface2(cfg)
+        self.robot.setControlMode(xbi.ControlMode.EFFORT)
         self.robot.sense()
+        
 
-        robot_q_map = self.robot.qToMap(self.robot.getPositionReferenceFeedback())
+        robot_q_map = self.robot.qToMap(self.robot.getJointPosition())
 
         # ── Build ModelInterface2 for the standalone solver ───────────────────────────
         self.model = xbi.ModelInterface2(urdf, srdf, 'pin')
@@ -45,8 +47,16 @@ class GravityCompNode(Node):
 
             
     def send_gravity_comp(self):
+        # Get robot state
+        self.robot.sense()
+        # Sync model to robot
+        self.model.setJointPosition(self.robot.qToMap(self.robot.getJointPosition()))
+        # Update model
+        self.model.update()
+        # Compute and send gravity compensation torques
         self.robot.setEffortReference(self.model.computeGravityCompensation())
-        self.robot.move()
+        # Send command to robot
+        self.robot.move() 
 
 
 def main(args=None):

@@ -23,7 +23,7 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PoseStamped, PointStamped, QuaternionStamped
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Header
+from std_msgs.msg import Header, Float64MultiArray
 
 from utils.ros_utils import fetch_robot_description
 from xbot2_interface import pyxbot2_interface as xbi
@@ -44,7 +44,7 @@ TRJ_PERIOD  = 10.0     # [s]   period of one full cycle
 
 # ── PD gains (world frame, per axis [x, y, z]) ───────────────────────────────
 KP_XYZ = [1.0, 30.0, 1.0]    # proportional [1/s]
-KD_XYZ = [0.05, 0.1, 0.05]  # derivative   [s]
+KD_XYZ = [0.05,  2.0, 0.05]  # derivative   [s]
 KI_XYZ = [1.0, 0.1, 1.0]  # integral   [s]
 MAX_Y_VEL = 10.0          # [m/s] cap for the gap correction velocity
 
@@ -127,7 +127,17 @@ _pub_des  = _plot_node.create_publisher(PoseStamped, '/ee/desired', 10)
 _pub_sent = _plot_node.create_publisher(PoseStamped, '/ee/sent',    10)
 _pub_cur  = _plot_node.create_publisher(PoseStamped, '/ee/current', 10)
 _pub_ik   = _plot_node.create_publisher(PoseStamped,  '/ee/ik',            10)
-_pub_js   = _plot_node.create_publisher(JointState,   '/controller/joints', 10)
+_pub_js   = _plot_node.create_publisher(JointState,        '/controller/joints', 10)
+_pub_ctrl = _plot_node.create_publisher(Float64MultiArray, '/ee/controller',     10)
+
+def _publish_controller(y_err, y_err_dot, y_err_integral, vy_cmd, y_des, y_cur):
+    """Publish P-controller signals as Float64MultiArray.
+    Layout: [y_err, y_err_dot, y_err_integral, vy_cmd, y_des, y_cur]
+    """
+    msg = Float64MultiArray()
+    msg.data = [float(y_err), float(y_err_dot), float(y_err_integral),
+                float(vy_cmd), float(y_des), float(y_cur)]
+    _pub_ctrl.publish(msg)
 
 def _publish_joint_state(pub, joint_map):
     """Publish a dict {name: position} as JointState."""
@@ -288,28 +298,28 @@ while True:
     model_shadow.setJointPosition(q_map_robot)
     model_shadow.update()
     ee_pose_cur = model_shadow.getPose(ee_distal, ee_base)
-    ee_pos_cur = ee_pose_cur.translation # + 0.2 * np.array([0.0, 1.0, 0.0])
+    ee_pos_cur = ee_pose_cur.translation 
 
     ee_pose_des = get_ee_pose_from_postural(model_shadow, postural_map)
     ee_pos_des = ee_pose_des.translation
 
     ## test: add a sinusoidal offset in world Y to the EE reference, to simulate a gap correction
-    world_y_in_ee = np.array([0.0, 1.0, 0.0]) #  initial_ee_pose.linear.T @
-    Y_TEST_AMP = 0.1
-    y_test_offset = Y_TEST_AMP * math.sin(2 * math.pi * t / TRJ_PERIOD) * world_y_in_ee
-    ee_pose_des.translation += y_test_offset
+    # world_y_in_ee = np.array([0.0, 1.0, 0.0]) #  initial_ee_pose.linear.T @
+    # Y_TEST_AMP = 0.1
+    # y_test_offset = Y_TEST_AMP * math.sin(2 * math.pi * t / TRJ_PERIOD) * world_y_in_ee
+    # ee_pose_des.translation += y_test_offset
 
     # ── Y P correction ─
-    # y_err = (ee_pos_des - ee_pos_cur)[1]
-    # y_err_dot = 0.0 if prev_y_err is None else (y_err - prev_y_err) / DT
-    # y_err_integral += y_err * DT
-    # prev_y_err = y_err
+    y_err = (ee_pos_des - ee_pos_cur)[1]
+    y_err_dot = 0.0 if prev_y_err is None else (y_err - prev_y_err) / DT
+    y_err_integral += y_err * DT
+    prev_y_err = y_err
 
-    # vy_cmd = KP_XYZ[1] * y_err  # + KD_XYZ[1] * y_err_dot + KI_XYZ[1] * y_err_integral
-    # vy_cmd = float(np.clip(vy_cmd, -MAX_Y_VEL, MAX_Y_VEL))
+    vy_cmd = KP_XYZ[1] * y_err  + KD_XYZ[1] * y_err_dot #+ KI_XYZ[1] * y_err_integral
+    vy_cmd = float(np.clip(vy_cmd, -MAX_Y_VEL, MAX_Y_VEL))
     # Closed-loop tracking: move from current Y toward desired Y
-    # ee_pose_des_mod = ee_pose_des.copy()
-    # ee_pose_des_mod.translation[1] = ee_pos_cur[1] + vy_cmd * DT
+    ee_pose_des_mod = ee_pose_des.copy()
+    ee_pose_des_mod.translation[1] = ee_pos_des[1] + vy_cmd * DT
 
     ee_task.setPoseReference(ee_pose_des)
 
@@ -325,7 +335,7 @@ while True:
     robot.move()
 
     # ── Publish model joint trajectory ───────────────────────────────────
-    _publish_joint_state(_pub_js, model.qToMap(model.getJointPosition()))
+    # _publish_joint_state(_pub_js, model.qToMap(model.getJointPosition()))
 
     # ── IK output EE pose ────────────────────────────────────────────────
     ee_pose_ik = model.getPose(ee_distal, ee_base)
@@ -340,6 +350,8 @@ while True:
     _publish_pose(_pub_des,  ee_pose_des)
     _publish_pose(_pub_ik,   ee_pose_ik)
     _publish_pose(_pub_cur,  ee_pose_cur)
+    _publish_controller(y_err, y_err_dot, y_err_integral, vy_cmd,
+                        ee_pos_des[1], ee_pos_cur[1])
 
     t += DT
 

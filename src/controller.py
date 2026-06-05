@@ -123,12 +123,28 @@ rclpy.init()
 
 # ── Publishers for PlotJuggler ─────────────────────────────────────────────
 _plot_node = rclpy.create_node('controller_plot')
-_pub_des  = _plot_node.create_publisher(PoseStamped, '/ee/desired', 10)
-_pub_sent = _plot_node.create_publisher(PoseStamped, '/ee/sent',    10)
-_pub_cur  = _plot_node.create_publisher(PoseStamped, '/ee/current', 10)
-_pub_ik   = _plot_node.create_publisher(PoseStamped,  '/ee/ik',            10)
+_pub_des  = _plot_node.create_publisher(PoseStamped,       '/ee/desired', 10)
+_pub_sent = _plot_node.create_publisher(PoseStamped,       '/ee/sent',    10)
+_pub_cur  = _plot_node.create_publisher(PoseStamped,       '/ee/current', 10)
+_pub_ik   = _plot_node.create_publisher(PoseStamped,       '/ee/ik',            10)
 _pub_js   = _plot_node.create_publisher(JointState,        '/controller/joints', 10)
 _pub_ctrl = _plot_node.create_publisher(Float64MultiArray, '/ee/controller',     10)
+
+# ── Gap Y subscriber — base_link-frame gap position from gap_pose_publisher ──
+# /gap/pose_robot is the gap expressed in base_link — this matches the CartesIO
+# task frame (ee_F.base_link: base_link) so it can be used directly as a setpoint.
+# In the future this comes from the camera seam-tracker (already in base_link).
+_gap_y_robot: float | None = None
+
+def _on_gap_pose_robot(msg: PoseStamped):
+    global _gap_y_robot
+    _gap_y_robot = msg.pose.position.y
+
+_plot_node.create_subscription(PoseStamped, '/gap/pose_robot', _on_gap_pose_robot, 10)
+
+# Spin the node in a background thread so the subscriber stays live
+_ros_thread = threading.Thread(target=rclpy.spin, args=(_plot_node,), daemon=True)
+_ros_thread.start()
 
 def _publish_controller(y_err, y_err_dot, y_err_integral, vy_cmd, y_des, y_cur):
     """Publish P-controller signals as Float64MultiArray.
@@ -138,15 +154,6 @@ def _publish_controller(y_err, y_err_dot, y_err_integral, vy_cmd, y_des, y_cur):
     msg.data = [float(y_err), float(y_err_dot), float(y_err_integral),
                 float(vy_cmd), float(y_des), float(y_cur)]
     _pub_ctrl.publish(msg)
-
-def _publish_joint_state(pub, joint_map):
-    """Publish a dict {name: position} as JointState."""
-    msg = JointState()
-    msg.header = Header()
-    msg.header.stamp = _plot_node.get_clock().now().to_msg()
-    msg.name     = list(joint_map.keys())
-    msg.position = [float(v) for v in joint_map.values()]
-    pub.publish(msg)
 
 def _publish_pose(pub, affine):
     """Publish an Affine3 as PoseStamped (position + quaternion)."""
@@ -295,13 +302,19 @@ while True:
     # ── Sense actual robot state for feedback ──────────────────────────────
     robot.sense()
     q_map_robot = robot.qToMap(robot.getJointPosition())
+    
     model_shadow.setJointPosition(q_map_robot)
     model_shadow.update()
     ee_pose_cur = model_shadow.getPose(ee_distal, ee_base)
     ee_pos_cur = ee_pose_cur.translation 
 
     ee_pose_des = get_ee_pose_from_postural(model_shadow, postural_map)
-    ee_pos_des = ee_pose_des.translation
+    ee_pos_des = ee_pose_des.translation.copy()
+
+    # ── Gap Y setpoint: gap in base_link frame from gap_pose_publisher ──────
+    # Matches the CartesIO task frame (ee_F.base_link: base_link).
+    # Falls back to postural trajectory Y if topic not yet received.
+    gap_y_setpoint = _gap_y_robot if _gap_y_robot is not None else ee_pos_des[1]
 
     ## test: add a sinusoidal offset in world Y to the EE reference, to simulate a gap correction
     # world_y_in_ee = np.array([0.0, 1.0, 0.0]) #  initial_ee_pose.linear.T @
@@ -309,19 +322,20 @@ while True:
     # y_test_offset = Y_TEST_AMP * math.sin(2 * math.pi * t / TRJ_PERIOD) * world_y_in_ee
     # ee_pose_des.translation += y_test_offset
 
-    # ── Y P correction ─
-    y_err = (ee_pos_des - ee_pos_cur)[1]
+    # ── Y PD correction toward gap_y_setpoint ────────────────────────────────
+    y_err = gap_y_setpoint - ee_pos_cur[1]
     y_err_dot = 0.0 if prev_y_err is None else (y_err - prev_y_err) / DT
     y_err_integral += y_err * DT
     prev_y_err = y_err
 
-    vy_cmd = KP_XYZ[1] * y_err  + KD_XYZ[1] * y_err_dot #+ KI_XYZ[1] * y_err_integral
+    vy_cmd = KP_XYZ[1] * y_err + KD_XYZ[1] * y_err_dot #+ KI_XYZ[1] * y_err_integral
     vy_cmd = float(np.clip(vy_cmd, -MAX_Y_VEL, MAX_Y_VEL))
-    # Closed-loop tracking: move from current Y toward desired Y
-    ee_pose_des_mod = ee_pose_des.copy()
-    ee_pose_des_mod.translation[1] = ee_pos_des[1] + vy_cmd * DT
 
-    ee_task.setPoseReference(ee_pose_des)
+    # Apply Y correction on top of postural trajectory (keep postural X, Z, orientation)
+    ee_pose_des_mod = ee_pose_des.copy()
+    ee_pose_des_mod.translation[1] = ee_pos_cur[1] + vy_cmd * DT
+
+    ee_task.setPoseReference(ee_pose_des_mod)
 
     # ── IK step — writes model.v ─────────────────────────────────────────
     ci.update(t, DT)
@@ -333,6 +347,8 @@ while True:
     # ── Send to robot ─────────────────────────────────────────────────────
     robot.setPositionReference(model.getJointPosition())
     robot.move()
+
+    # ── Publishing stuff for plotJuggler ─────────────────────────────────
 
     # ── Publish model joint trajectory ───────────────────────────────────
     # _publish_joint_state(_pub_js, model.qToMap(model.getJointPosition()))
@@ -351,7 +367,7 @@ while True:
     _publish_pose(_pub_ik,   ee_pose_ik)
     _publish_pose(_pub_cur,  ee_pose_cur)
     _publish_controller(y_err, y_err_dot, y_err_integral, vy_cmd,
-                        ee_pos_des[1], ee_pos_cur[1])
+                        gap_y_setpoint, ee_pos_cur[1])
 
     t += DT
 

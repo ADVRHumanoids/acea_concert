@@ -18,36 +18,30 @@ class DiagnosticPlotter:
             value = 0.0
         return KeyValue(key=key, value=f"{value:.9g}")
 
-    def publish_controller_status(
-        self,
-        vy_cmd,
-        gap_normal_coord,
-        ee_measured_normal_coord,
-        gap_y_axis_robot,
-        linear_correction_angle,
-        sent_normal_coord,
-        translation_tracking_normal,
-        linear_tracking_angle,
-    ):
-        measured_gap_error = gap_normal_coord - ee_measured_normal_coord
+    def _gap_orientation_from_base_y(self, gap_y_axis_robot):
+        gap_y_axis_robot = np.asarray(gap_y_axis_robot, dtype=float)
+        xy_norm = np.linalg.norm(gap_y_axis_robot[:2])
+        if xy_norm < 1e-9:
+            return 0.0
+        gap_y_axis_robot = gap_y_axis_robot / np.linalg.norm(gap_y_axis_robot)
+        return np.arctan2(-gap_y_axis_robot[0], gap_y_axis_robot[1])
+
+    def publish_controller_status(self, gap_y_axis_robot, metrics):
+        gap_orientation_angle = self._gap_orientation_from_base_y(
+            gap_y_axis_robot)
 
         status = DiagnosticStatus()
         status.level = DiagnosticStatus.OK
         status.name = 'ee_gap_controller'
-        status.message = 'gap-normal tracking'
+        status.message = 'gap-frame tracking'
         status.hardware_id = 'concert'
         status.values = [
-            self._kv('plane/gap_target_m', gap_normal_coord),
-            self._kv('plane/ee_actual_m', ee_measured_normal_coord),
-            self._kv('plane/ee_sent_m', sent_normal_coord),
-            self._kv('error/gap_to_ee_m', measured_gap_error),
-            self._kv('tracking/position_error_m', translation_tracking_normal),
-            self._kv('tracking/orientation_error_deg',
-                     np.degrees(linear_tracking_angle)),
-            self._kv('command/velocity_mps', vy_cmd),
-            self._kv('command/orientation_correction_deg',
-                     np.degrees(linear_correction_angle)),
+            self._kv('gap/orientation_from_base_y_deg',
+                     np.degrees(gap_orientation_angle)),
         ]
+        status.values.extend(
+            self._kv(key, value) for key, value in metrics.items()
+        )
 
         msg = DiagnosticArray()
         msg.header.stamp = self.node.get_clock().now().to_msg()

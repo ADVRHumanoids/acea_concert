@@ -44,11 +44,13 @@ HOMING_DURATION = 5.0  # [s]  time to move from current pose to trajectory node-
 TRJ_HALF    = 0.40     # [m]   half-stroke
 TRJ_PERIOD  = 10.0     # [s]   period of one full cycle
 
-# ── PD gains (world frame, per axis [x, y, z]) ───────────────────────────────
-KP_XYZ = [1.0, 30.0, 1.0]    # proportional [1/s]
-KD_XYZ = [0.05,  2.0, 0.05]  # derivative   [s]
+# ── PD gains (gap frame: x=tangent along pipe, y=gap normal) ────────────────
+KP_XYZ = [30.0, 30.0, 1.0]    # proportional [1/s]
+KD_XYZ = [2.0,  2.0, 0.05]  # derivative   [s]
 KI_XYZ = [1.0, 0.1, 1.0]  # integral   [s]
 MAX_Y_VEL = 10.0          # [m/s] cap for the gap-normal correction velocity
+MAX_X_VEL = 10.0          # [m/s] cap for the gap-tangent correction velocity
+BASE_X_AXIS_ROBOT = np.array([1.0, 0.0, 0.0])
 
 # ── Trajectory slowdown factor ───────────────────────────────────────────────
 TRAJ_SLOWDOWN = 12.0  # 1.0 = normal speed, 2.0 = half speed, etc.
@@ -137,6 +139,21 @@ def _axis_orthogonal_to(axis: np.ndarray) -> np.ndarray:
         if orth is not None:
             return orth
     return np.array([1.0, 0.0, 0.0])
+
+def _gap_tangent_axis(gap_y_axis: np.ndarray) -> np.ndarray:
+    """Return the pipe/gap tangent axis, expressed in base_link."""
+    gap_y_axis = _unit_vector(gap_y_axis, np.array([0.0, 1.0, 0.0]))
+
+    # The pipes are horizontal, so use the horizontal direction perpendicular
+    # to the measured gap normal and keep its sign close to base +X.
+    tangent = np.array([gap_y_axis[1], -gap_y_axis[0], 0.0])
+    tangent = _unit_vector(tangent)
+    if tangent is None:
+        tangent = BASE_X_AXIS_ROBOT - np.dot(BASE_X_AXIS_ROBOT, gap_y_axis) * gap_y_axis
+        tangent = _unit_vector(tangent, _axis_orthogonal_to(gap_y_axis))
+    if np.dot(tangent, BASE_X_AXIS_ROBOT) < 0.0:
+        tangent = -tangent
+    return tangent
 
 def _rotation_with_y_axis(R_hint: np.ndarray, gap_y_axis: np.ndarray) -> np.ndarray:
     """
@@ -347,7 +364,11 @@ initial_ee_pose = model.getPose(ee_distal, ee_base).copy()
 
 # ── PD state ─────────────────────────────────────────────────────────────────
 prev_y_err = None            # gap-normal error at previous tick
+prev_x_err = None            # gap-tangent error at previous tick
 y_err_integral = 0.0
+x_err_integral = 0.0
+gap_reference_pos_robot = None
+gap_reference_x_axis_robot = None
 # print("[controller] Starting PD control loop …")
 
 # ── Control loop ──────────────────────────────────────────────────────────────
@@ -383,14 +404,30 @@ while True:
         if has_gap_axis
         else np.array([0.0, 1.0, 0.0])
     )
+    gap_x_axis_robot = _gap_tangent_axis(gap_y_axis_robot)
 
-    # ── Gap normal setpoint in base_link frame ──────────────────────────────
-    # Error is the signed distance from the EE to the y-gap plane, measured
-    # along the gap normal. If the gap point is not available yet, use the
-    # postural desired pose as a zero-correction fallback.
+    if gap_pos_robot is not None and gap_reference_pos_robot is None:
+        gap_reference_pos_robot = gap_pos_robot.copy()
+        gap_reference_x_axis_robot = gap_x_axis_robot.copy()
+
+    # ── Gap-frame setpoints in base_link frame ──────────────────────────────
+    # Normal coordinate: distance to the y-gap plane.
+    # Tangent coordinate: position along the pipe/gap line.
     gap_point_robot = gap_pos_robot if gap_pos_robot is not None else ee_pos_des
     gap_normal_coord = float(np.dot(gap_point_robot, gap_y_axis_robot))
     ee_normal_coord = float(np.dot(ee_pos_cur, gap_y_axis_robot))
+
+    if gap_reference_pos_robot is not None:
+        planned_x_offset = float(
+            np.dot(ee_pos_des - gap_reference_pos_robot,
+                   gap_reference_x_axis_robot)
+        )
+        gap_tangent_target_coord = float(
+            np.dot(gap_point_robot, gap_x_axis_robot) + planned_x_offset
+        )
+    else:
+        gap_tangent_target_coord = float(np.dot(ee_pos_des, gap_x_axis_robot))
+    ee_tangent_coord = float(np.dot(ee_pos_cur, gap_x_axis_robot))
 
     ## test: add a sinusoidal offset in world Y to the EE reference, to simulate a gap correction
     # world_y_in_ee = np.array([0.0, 1.0, 0.0]) #  initial_ee_pose.linear.T @
@@ -407,18 +444,28 @@ while True:
     vy_cmd = KP_XYZ[1] * y_err + KD_XYZ[1] * y_err_dot #+ KI_XYZ[1] * y_err_integral
     vy_cmd = float(np.clip(vy_cmd, -MAX_Y_VEL, MAX_Y_VEL))
 
-    # Apply normal correction on top of the postural trajectory: keep the
-    # trajectory tangent to the y-gap plane, replace only the normal coordinate.
+    x_err = gap_tangent_target_coord - ee_tangent_coord
+    x_err_dot = 0.0 if prev_x_err is None else (x_err - prev_x_err) / DT
+    x_err_integral += x_err * DT
+    prev_x_err = x_err
+
+    vx_cmd = KP_XYZ[0] * x_err + KD_XYZ[0] * x_err_dot #+ KI_XYZ[0] * x_err_integral
+    vx_cmd = float(np.clip(vx_cmd, -MAX_X_VEL, MAX_X_VEL))
+
+    # Apply both corrections in the gap frame: normal keeps the tool centered
+    # between the pipes, tangent keeps it on the moving/rotated gap line.
     ee_pose_des_mod = ee_pose_des.copy()
     commanded_normal_coord = ee_normal_coord + vy_cmd * DT
     postural_normal_coord = float(np.dot(ee_pos_des, gap_y_axis_robot))
+    normal_delta = commanded_normal_coord - postural_normal_coord
+    commanded_tangent_coord = ee_tangent_coord + vx_cmd * DT
+    postural_tangent_coord = float(np.dot(ee_pos_des, gap_x_axis_robot))
+    tangent_delta = commanded_tangent_coord - postural_tangent_coord
     ee_pose_des_mod.translation = (
         ee_pos_des
-        + (commanded_normal_coord - postural_normal_coord) * gap_y_axis_robot
+        + normal_delta * gap_y_axis_robot
+        + tangent_delta * gap_x_axis_robot
     )
-    sent_normal_coord = float(
-        np.dot(ee_pose_des_mod.translation, gap_y_axis_robot))
-
     # Align the EE local Y axis to the measured y-gap direction when available.
     # The sign is selected inside the helper to stay close to the postural pose.
     if has_gap_axis:
@@ -460,7 +507,13 @@ while True:
     ee_pose_cur = model_shadow.getPose(ee_distal, ee_base)
     ee_measured_normal_coord = float(
         np.dot(ee_pose_cur.translation, gap_y_axis_robot))
-    translation_tracking_normal = sent_normal_coord - ee_measured_normal_coord
+    ee_measured_tangent_coord = float(
+        np.dot(ee_pose_cur.translation, gap_x_axis_robot))
+    translation_tracking_error = ee_pose_des_mod.translation - ee_pose_cur.translation
+    translation_tracking_normal = float(
+        np.dot(translation_tracking_error, gap_y_axis_robot))
+    translation_tracking_tangent = float(
+        np.dot(translation_tracking_error, gap_x_axis_robot))
     linear_tracking_angle, _ = _rotation_correction(
         ee_pose_des_mod.linear,
         ee_pose_cur.linear,
@@ -472,14 +525,21 @@ while True:
     _publish_pose(_pub_ik,   ee_pose_ik,      ee_base)
     _publish_pose(_pub_cur,  ee_pose_cur,     ee_base)
     diagnostic_plotter.publish_controller_status(
-        vy_cmd,
-        gap_normal_coord,
-        ee_measured_normal_coord,
         gap_y_axis_robot,
-        linear_correction_angle,
-        sent_normal_coord,
-        translation_tracking_normal,
-        linear_tracking_angle,
+        {
+            'gap/normal_target_m': gap_normal_coord,
+            'gap/normal_actual_m': ee_measured_normal_coord,
+            'gap/tangent_x_target_m': gap_tangent_target_coord,
+            'gap/tangent_x_actual_m': ee_measured_tangent_coord,
+            'error/normal_m': y_err,
+            'error/tangent_x_m': x_err,
+            'tracking/normal_m': translation_tracking_normal,
+            'tracking/tangent_x_m': translation_tracking_tangent,
+            'command/normal_velocity_mps': vy_cmd,
+            'command/tangent_x_velocity_mps': vx_cmd,
+            'command/orientation_correction_deg': np.degrees(linear_correction_angle),
+            'tracking/orientation_error_deg': np.degrees(linear_tracking_angle),
+        },
     )
 
     t += DT

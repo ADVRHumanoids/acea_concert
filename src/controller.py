@@ -20,12 +20,14 @@ import numpy as np
 from scipy.io import loadmat
 from scipy.interpolate import interp1d
 import rclpy
-from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped, PointStamped, QuaternionStamped
+# from rclpy.node import Node
+from geometry_msgs.msg import PoseStamped, Vector3Stamped
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Header, Float64MultiArray
+from std_msgs.msg import Header
 
 from utils.ros_utils import fetch_robot_description
+from utils.diagnostic import DiagnosticPlotter
+
 from xbot2_interface import pyxbot2_interface as xbi
 from xbot2_interface.pyaffine3 import Affine3
 from cartesian_interface import pyci
@@ -46,7 +48,7 @@ TRJ_PERIOD  = 10.0     # [s]   period of one full cycle
 KP_XYZ = [1.0, 30.0, 1.0]    # proportional [1/s]
 KD_XYZ = [0.05,  2.0, 0.05]  # derivative   [s]
 KI_XYZ = [1.0, 0.1, 1.0]  # integral   [s]
-MAX_Y_VEL = 10.0          # [m/s] cap for the gap correction velocity
+MAX_Y_VEL = 10.0          # [m/s] cap for the gap-normal correction velocity
 
 # ── Trajectory slowdown factor ───────────────────────────────────────────────
 TRAJ_SLOWDOWN = 12.0  # 1.0 = normal speed, 2.0 = half speed, etc.
@@ -115,6 +117,64 @@ def get_ee_pose_from_postural(model_target, postural_map: dict) -> Affine3:
     model_target.update()
     return model_target.getPose(ee_distal, ee_base)
 
+def _unit_vector(v, fallback=None):
+    """Return v normalized, or fallback if v is too small."""
+    v = np.asarray(v, dtype=float)
+    norm = np.linalg.norm(v)
+    if norm > 1e-9:
+        return v / norm
+    if fallback is None:
+        return None
+    return np.asarray(fallback, dtype=float)
+
+def _axis_orthogonal_to(axis: np.ndarray) -> np.ndarray:
+    """Pick a deterministic unit vector orthogonal to axis."""
+    for candidate in (np.array([0.0, 0.0, 1.0]),
+                      np.array([1.0, 0.0, 0.0]),
+                      np.array([0.0, 1.0, 0.0])):
+        orth = candidate - np.dot(candidate, axis) * axis
+        orth = _unit_vector(orth)
+        if orth is not None:
+            return orth
+    return np.array([1.0, 0.0, 0.0])
+
+def _rotation_with_y_axis(R_hint: np.ndarray, gap_y_axis: np.ndarray) -> np.ndarray:
+    """
+    Align the EE local Y axis with the y-gap axis, preserving the current
+    postural tool direction as much as possible.
+    """
+    R_hint = np.asarray(R_hint, dtype=float)
+    gap_y_axis = _unit_vector(gap_y_axis, np.array([0.0, 1.0, 0.0]))
+
+    # Keep the sign closest to the postural reference to avoid 180 deg flips.
+    target_y = gap_y_axis
+    if np.dot(R_hint[:, 1], target_y) < 0.0:
+        target_y = -target_y
+
+    target_z = R_hint[:, 2] - np.dot(R_hint[:, 2], target_y) * target_y
+    target_z = _unit_vector(target_z)
+    if target_z is None:
+        target_z = _axis_orthogonal_to(target_y)
+
+    target_x = _unit_vector(np.cross(target_y, target_z))
+    target_z = _unit_vector(np.cross(target_x, target_y))
+    return np.column_stack([target_x, target_y, target_z])
+
+def _rotation_correction(R_target: np.ndarray, R_reference: np.ndarray):
+    """Return angle and rotation vector taking R_reference to R_target."""
+    R_delta = np.asarray(R_target, dtype=float) @ np.asarray(R_reference, dtype=float).T
+    cos_angle = (np.trace(R_delta) - 1.0) / 2.0
+    angle = float(np.arccos(np.clip(cos_angle, -1.0, 1.0)))
+    if angle < 1e-9:
+        return 0.0, np.zeros(3)
+
+    axis = np.array([
+        R_delta[2, 1] - R_delta[1, 2],
+        R_delta[0, 2] - R_delta[2, 0],
+        R_delta[1, 0] - R_delta[0, 1],
+    ]) / (2.0 * np.sin(angle))
+    return angle, axis * angle
+
 print("[controller] Trajectory interpolator ready.")
 
 # ── Read URDF/SRDF from robot_description_publisher ───────────────────────────
@@ -128,39 +188,44 @@ _pub_sent = _plot_node.create_publisher(PoseStamped,       '/ee/sent',    10)
 _pub_cur  = _plot_node.create_publisher(PoseStamped,       '/ee/current', 10)
 _pub_ik   = _plot_node.create_publisher(PoseStamped,       '/ee/ik',            10)
 _pub_js   = _plot_node.create_publisher(JointState,        '/controller/joints', 10)
-_pub_ctrl = _plot_node.create_publisher(Float64MultiArray, '/ee/controller',     10)
 
-# ── Gap Y subscriber — base_link-frame gap position from gap_pose_publisher ──
+diagnostic_plotter = DiagnosticPlotter(_plot_node)
+# ── Gap subscribers — base_link-frame gap point and y-gap direction ──────────
 # /gap/pose_robot is the gap expressed in base_link — this matches the CartesIO
 # task frame (ee_F.base_link: base_link) so it can be used directly as a setpoint.
+# /gap/y_axis_robot is the y-gap unit direction expressed in base_link.
 # In the future this comes from the camera seam-tracker (already in base_link).
-_gap_y_robot: float | None = None
+_gap_pos_robot: np.ndarray | None = None
+_gap_y_axis_robot: np.ndarray | None = None
 
 def _on_gap_pose_robot(msg: PoseStamped):
-    global _gap_y_robot
-    _gap_y_robot = msg.pose.position.y
+    global _gap_pos_robot
+    _gap_pos_robot = np.array([
+        msg.pose.position.x,
+        msg.pose.position.y,
+        msg.pose.position.z,
+    ], dtype=float)
+
+def _on_gap_y_axis_robot(msg: Vector3Stamped):
+    global _gap_y_axis_robot
+    axis = np.array([msg.vector.x, msg.vector.y, msg.vector.z], dtype=float)
+    axis = _unit_vector(axis)
+    if axis is not None:
+        _gap_y_axis_robot = axis
 
 _plot_node.create_subscription(PoseStamped, '/gap/pose_robot', _on_gap_pose_robot, 10)
+_plot_node.create_subscription(Vector3Stamped, '/gap/y_axis_robot', _on_gap_y_axis_robot, 10)
 
 # Spin the node in a background thread so the subscriber stays live
 _ros_thread = threading.Thread(target=rclpy.spin, args=(_plot_node,), daemon=True)
 _ros_thread.start()
 
-def _publish_controller(y_err, y_err_dot, y_err_integral, vy_cmd, y_des, y_cur):
-    """Publish P-controller signals as Float64MultiArray.
-    Layout: [y_err, y_err_dot, y_err_integral, vy_cmd, y_des, y_cur]
-    """
-    msg = Float64MultiArray()
-    msg.data = [float(y_err), float(y_err_dot), float(y_err_integral),
-                float(vy_cmd), float(y_des), float(y_cur)]
-    _pub_ctrl.publish(msg)
-
-def _publish_pose(pub, affine):
+def _publish_pose(pub, affine, frame_id='world'):
     """Publish an Affine3 as PoseStamped (position + quaternion)."""
     msg = PoseStamped()
     msg.header = Header()
     msg.header.stamp = _plot_node.get_clock().now().to_msg()
-    msg.header.frame_id = 'world'
+    msg.header.frame_id = frame_id
     xyz = affine.translation
     q   = affine.quaternion  # [x, y, z, w]
     msg.pose.position.x = float(xyz[0])
@@ -281,7 +346,7 @@ print(f"[controller] Task '{TASK_NAME}': {ee_distal} → {ee_base}")
 initial_ee_pose = model.getPose(ee_distal, ee_base).copy()
 
 # ── PD state ─────────────────────────────────────────────────────────────────
-prev_y_err = None            # world-frame Y error at previous tick
+prev_y_err = None            # gap-normal error at previous tick
 y_err_integral = 0.0
 # print("[controller] Starting PD control loop …")
 
@@ -311,10 +376,21 @@ while True:
     ee_pose_des = get_ee_pose_from_postural(model_shadow, postural_map)
     ee_pos_des = ee_pose_des.translation.copy()
 
-    # ── Gap Y setpoint: gap in base_link frame from gap_pose_publisher ──────
-    # Matches the CartesIO task frame (ee_F.base_link: base_link).
-    # Falls back to postural trajectory Y if topic not yet received.
-    gap_y_setpoint = _gap_y_robot if _gap_y_robot is not None else ee_pos_des[1]
+    gap_pos_robot = None if _gap_pos_robot is None else _gap_pos_robot.copy()
+    has_gap_axis = _gap_y_axis_robot is not None
+    gap_y_axis_robot = (
+        _gap_y_axis_robot.copy()
+        if has_gap_axis
+        else np.array([0.0, 1.0, 0.0])
+    )
+
+    # ── Gap normal setpoint in base_link frame ──────────────────────────────
+    # Error is the signed distance from the EE to the y-gap plane, measured
+    # along the gap normal. If the gap point is not available yet, use the
+    # postural desired pose as a zero-correction fallback.
+    gap_point_robot = gap_pos_robot if gap_pos_robot is not None else ee_pos_des
+    gap_normal_coord = float(np.dot(gap_point_robot, gap_y_axis_robot))
+    ee_normal_coord = float(np.dot(ee_pos_cur, gap_y_axis_robot))
 
     ## test: add a sinusoidal offset in world Y to the EE reference, to simulate a gap correction
     # world_y_in_ee = np.array([0.0, 1.0, 0.0]) #  initial_ee_pose.linear.T @
@@ -322,8 +398,8 @@ while True:
     # y_test_offset = Y_TEST_AMP * math.sin(2 * math.pi * t / TRJ_PERIOD) * world_y_in_ee
     # ee_pose_des.translation += y_test_offset
 
-    # ── Y PD correction toward gap_y_setpoint ────────────────────────────────
-    y_err = gap_y_setpoint - ee_pos_cur[1]
+    # ── PD correction toward the y-gap plane ─────────────────────────────────
+    y_err = gap_normal_coord - ee_normal_coord
     y_err_dot = 0.0 if prev_y_err is None else (y_err - prev_y_err) / DT
     y_err_integral += y_err * DT
     prev_y_err = y_err
@@ -331,9 +407,30 @@ while True:
     vy_cmd = KP_XYZ[1] * y_err + KD_XYZ[1] * y_err_dot #+ KI_XYZ[1] * y_err_integral
     vy_cmd = float(np.clip(vy_cmd, -MAX_Y_VEL, MAX_Y_VEL))
 
-    # Apply Y correction on top of postural trajectory (keep postural X, Z, orientation)
+    # Apply normal correction on top of the postural trajectory: keep the
+    # trajectory tangent to the y-gap plane, replace only the normal coordinate.
     ee_pose_des_mod = ee_pose_des.copy()
-    ee_pose_des_mod.translation[1] = ee_pos_cur[1] + vy_cmd * DT
+    commanded_normal_coord = ee_normal_coord + vy_cmd * DT
+    postural_normal_coord = float(np.dot(ee_pos_des, gap_y_axis_robot))
+    ee_pose_des_mod.translation = (
+        ee_pos_des
+        + (commanded_normal_coord - postural_normal_coord) * gap_y_axis_robot
+    )
+    sent_normal_coord = float(
+        np.dot(ee_pose_des_mod.translation, gap_y_axis_robot))
+
+    # Align the EE local Y axis to the measured y-gap direction when available.
+    # The sign is selected inside the helper to stay close to the postural pose.
+    if has_gap_axis:
+        ee_pose_des_mod.linear = _rotation_with_y_axis(
+            ee_pose_des.linear,
+            gap_y_axis_robot,
+        )
+
+    linear_correction_angle, _ = _rotation_correction(
+        ee_pose_des_mod.linear,
+        ee_pose_des.linear,
+    )
 
     ee_task.setPoseReference(ee_pose_des_mod)
 
@@ -361,13 +458,29 @@ while True:
     model_shadow.setJointPosition(q_map_robot)
     model_shadow.update()
     ee_pose_cur = model_shadow.getPose(ee_distal, ee_base)
+    ee_measured_normal_coord = float(
+        np.dot(ee_pose_cur.translation, gap_y_axis_robot))
+    translation_tracking_normal = sent_normal_coord - ee_measured_normal_coord
+    linear_tracking_angle, _ = _rotation_correction(
+        ee_pose_des_mod.linear,
+        ee_pose_cur.linear,
+    )
 
     # ── Publish to PlotJuggler topics ─────────────────────────────────────
-    _publish_pose(_pub_des,  ee_pose_des)
-    _publish_pose(_pub_ik,   ee_pose_ik)
-    _publish_pose(_pub_cur,  ee_pose_cur)
-    _publish_controller(y_err, y_err_dot, y_err_integral, vy_cmd,
-                        gap_y_setpoint, ee_pos_cur[1])
+    _publish_pose(_pub_des,  ee_pose_des,     ee_base)
+    _publish_pose(_pub_sent, ee_pose_des_mod, ee_base)
+    _publish_pose(_pub_ik,   ee_pose_ik,      ee_base)
+    _publish_pose(_pub_cur,  ee_pose_cur,     ee_base)
+    diagnostic_plotter.publish_controller_status(
+        vy_cmd,
+        gap_normal_coord,
+        ee_measured_normal_coord,
+        gap_y_axis_robot,
+        linear_correction_angle,
+        sent_normal_coord,
+        translation_tracking_normal,
+        linear_tracking_angle,
+    )
 
     t += DT
 

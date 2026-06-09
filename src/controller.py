@@ -19,12 +19,12 @@ from scipy.io import loadmat
 
 from controller_ros import ControllerRosInterface
 from utils.controller_geometry import (
-    gap_tangent_axis,
     rotation_correction,
-    rotation_with_y_axis,
 )
 from utils.controller_trajectory import (
     CyclicPosturalTrajectory,
+    CyclicQuaternionTrajectory,
+    CyclicVectorTrajectory,
     ee_pose_from_postural,
 )
 
@@ -87,6 +87,10 @@ trj_dur = (N - 1) * trj_dt
 n_base  = 7
 q_act   = q_traj[n_base:, :]  # (n_actuated x N)
 n_act   = q_act.shape[0]
+weld_pos_traj_gap = np.asarray(
+    mat_data['desired_traj_weld_pos_gap'], dtype=float)
+weld_quat_traj_gap = np.asarray(
+    mat_data['desired_traj_weld_quat_gap'], dtype=float)
 
 # casadi_kin_dyn prepends virtual/fixed joints ('universe', 'reference', …)
 # that carry no DOF — strip them so len(_jnames) == _n_act
@@ -97,6 +101,8 @@ print(f"[controller] Trajectory: {N} nodes, dt={trj_dt:.4f}s, duration={trj_dur:
 print(f"[controller] Actuated joint names ({len(jnames)}): {jnames}")
 
 postural_trajectory = CyclicPosturalTrajectory(q_act, jnames, trj_dt)
+weld_gap_trajectory = CyclicVectorTrajectory(weld_pos_traj_gap, trj_dt) # desired EE/weld position expressed in the gap frame
+weld_gap_orientation = CyclicQuaternionTrajectory(weld_quat_traj_gap, trj_dt) # desired EE orientation expressed in the gap frame
 print("[controller] Trajectory interpolator ready.")
 
 # ── Read URDF/SRDF from robot_description_publisher ───────────────────────────
@@ -213,8 +219,6 @@ prev_y_err = None            # gap-normal error at previous tick
 prev_x_err = None            # gap-tangent error at previous tick
 y_err_integral = 0.0
 x_err_integral = 0.0
-gap_reference_pos_robot = None
-gap_reference_x_axis_robot = None
 # print("[controller] Starting PD control loop …")
 
 # ── Control loop ──────────────────────────────────────────────────────────────
@@ -243,42 +247,36 @@ while True:
     ee_pose_des = ee_pose_from_postural(model_shadow, postural_map, ee_distal, ee_base)
     ee_pos_des = ee_pose_des.translation.copy()
 
-    # NOW: read the gap position and orientation from ROS topics
-    gap_pos_robot = controller_ros.gap_pos_robot     # gap position in robot frame, from ROS topic
-    gap_y_axis_msg = controller_ros.gap_y_axis_robot # gap y-axis in robot frame, from ROS topic
-    has_gap_axis = gap_y_axis_msg is not None
+    # NOW: read the measured gap pose and full gap frame from ROS topics.
+    gap_origin_base = controller_ros.gap_origin_base
+    gap_axes_base = controller_ros.gap_axes_base
+    has_gap_axes = gap_axes_base is not None
 
-    gap_y_axis_robot = (gap_y_axis_msg if has_gap_axis else np.array([0.0, 1.0, 0.0]))
-    gap_x_axis_robot = gap_tangent_axis(gap_y_axis_robot) # tangent along the pipe/gap line, in robot frame
-
-    if gap_pos_robot is not None and gap_reference_pos_robot is None:
-        gap_reference_pos_robot = gap_pos_robot.copy()
-        gap_reference_x_axis_robot = gap_x_axis_robot.copy()
-
-    # ── Gap-frame setpoints in base_link frame ──────────────────────────────
-    # Normal coordinate: distance to the y-gap plane.
-    # Tangent coordinate: position along the pipe/gap line.
-    gap_point_robot = gap_pos_robot if gap_pos_robot is not None else ee_pos_des # point used for the gap plane can be either measured gap position (the planned EE position if the gap position is not available)
-    gap_normal_coord = float(np.dot(gap_point_robot, gap_y_axis_robot)) # distance from gap plane along gap normal of planned EE position
-    ee_normal_coord = float(np.dot(ee_pos_cur, gap_y_axis_robot)) # distance from gap plane along gap normal for current EE position
-
-    # Tangent coordinate: position along the pipe/gap line.
-    # If a reference is available, we compute the planned offset along the tangent from the reference position, 
-    # and apply it to the current measured gap position to get the target tangent coordinate. 
-    # This allows to keep the same planned tangent offset even if the gap moves.
-
-    if gap_reference_pos_robot is not None:
-        planned_x_offset = float(
-            np.dot(ee_pos_des - gap_reference_pos_robot,
-                   gap_reference_x_axis_robot)
-        )
-        gap_tangent_target_coord = float(
-            np.dot(gap_point_robot, gap_x_axis_robot) + planned_x_offset
-        )
+    if has_gap_axes:
+        gap_x_axis_base, gap_y_axis_base, gap_z_axis_base = gap_axes_base
     else:
-        gap_tangent_target_coord = float(np.dot(ee_pos_des, gap_x_axis_robot))
+        gap_x_axis_base = np.array([1.0, 0.0, 0.0])
+        gap_y_axis_base = np.array([0.0, 1.0, 0.0])
+        gap_z_axis_base = np.array([0.0, 0.0, 1.0])
 
-    ee_tangent_coord = float(np.dot(ee_pos_cur, gap_x_axis_robot))
+    base_R_gap = np.column_stack([gap_x_axis_base, gap_y_axis_base, gap_z_axis_base])
+
+    # ── Pipe-relative weld target in base_link frame ────────────────────────
+    weld_pos_des_gap = weld_gap_trajectory.value(t_traj)
+    if gap_origin_base is not None:
+        weld_target_pos_base = gap_origin_base + base_R_gap @ weld_pos_des_gap
+    else:
+        weld_target_pos_base = ee_pos_des
+
+    # Gap-frame setpoints: normal is across the pipes, tangent is along the
+    # planned weld direction.
+    gap_normal_coord = float(
+        np.dot(weld_target_pos_base, gap_y_axis_base))
+    ee_normal_coord = float(np.dot(ee_pos_cur, gap_y_axis_base))
+
+    gap_tangent_target_coord = float(
+        np.dot(weld_target_pos_base, gap_x_axis_base))
+    ee_tangent_coord = float(np.dot(ee_pos_cur, gap_x_axis_base))
 
     ## add a sinusoidal offset in world Y to the EE reference, to simulate a gap correction
     # world_y_in_ee = np.array([0.0, 1.0, 0.0]) #  initial_ee_pose.linear.T @
@@ -317,23 +315,20 @@ while True:
     # between the pipes, tangent keeps it on the moving/rotated gap line.
     ee_pose_des_mod = ee_pose_des.copy()
     commanded_normal_coord = ee_normal_coord + vy_cmd * DT
-    postural_normal_coord = float(np.dot(ee_pos_des, gap_y_axis_robot))
+    postural_normal_coord = float(np.dot(ee_pos_des, gap_y_axis_base))
     normal_delta = commanded_normal_coord - postural_normal_coord
     commanded_tangent_coord = ee_tangent_coord + vx_cmd * DT
-    postural_tangent_coord = float(np.dot(ee_pos_des, gap_x_axis_robot))
+    postural_tangent_coord = float(np.dot(ee_pos_des, gap_x_axis_base))
     tangent_delta = commanded_tangent_coord - postural_tangent_coord
     ee_pose_des_mod.translation = (
         ee_pos_des
-        + normal_delta * gap_y_axis_robot
-        + tangent_delta * gap_x_axis_robot
+        + normal_delta * gap_y_axis_base
+        + tangent_delta * gap_x_axis_base
     )
-    # Align the EE local Y axis to the measured y-gap direction when available.
-    # The sign is selected inside the helper to stay close to the postural pose.
-    if has_gap_axis:
-        ee_pose_des_mod.linear = rotation_with_y_axis(
-            ee_pose_des.linear,
-            gap_y_axis_robot,
-        )
+    # Apply the optimized tool orientation relative to the current gap frame.
+    if has_gap_axes:
+        gap_R_ee_des = weld_gap_orientation.matrix(t_traj)
+        ee_pose_des_mod.linear = base_R_gap @ gap_R_ee_des
 
     linear_correction_angle, _ = rotation_correction(
         ee_pose_des_mod.linear,
@@ -358,49 +353,21 @@ while True:
 
     robot.sense()
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     q_map_robot = robot.qToMap(robot.getJointPosition())
     model_shadow.setJointPosition(q_map_robot)
     model_shadow.update()
     ee_pose_cur = model_shadow.getPose(ee_distal, ee_base)
     ee_measured_normal_coord = float(
-        np.dot(ee_pose_cur.translation, gap_y_axis_robot))
+        np.dot(ee_pose_cur.translation, gap_y_axis_base))
     ee_measured_tangent_coord = float(
-        np.dot(ee_pose_cur.translation, gap_x_axis_robot))
-    translation_tracking_error = ee_pose_des_mod.translation - ee_pose_cur.translation
-    translation_tracking_normal = float(
-        np.dot(translation_tracking_error, gap_y_axis_robot))
-    translation_tracking_tangent = float(
-        np.dot(translation_tracking_error, gap_x_axis_robot))
+        np.dot(ee_pose_cur.translation, gap_x_axis_base))
     linear_tracking_angle, _ = rotation_correction(
         ee_pose_des_mod.linear,
         ee_pose_cur.linear,
+    )
+    gap_origin_normal_coord = (
+        float(np.dot(gap_origin_base, gap_y_axis_base))
+        if gap_origin_base is not None else 0.0
     )
 
     controller_ros.publish_controller_state(
@@ -409,24 +376,19 @@ while True:
         ee_pose_ik,
         ee_pose_cur,
         ee_base,
-        gap_y_axis_robot,
+        gap_y_axis_base,
         {
-            'gap/normal_target_m': gap_normal_coord,
-            'gap/normal_actual_m': ee_measured_normal_coord, 
-            'gap/tangent_x_target_m': gap_tangent_target_coord,
-            'gap/tangent_x_actual_m': ee_measured_tangent_coord,
-            'error/normal_m': y_err,
-            'error/tangent_x_m': x_err,
-            'tracking/normal_m': translation_tracking_normal,
-            'tracking/tangent_x_m': translation_tracking_tangent,
-            'command/normal_velocity_mps': vy_cmd,
-            'command/tangent_x_velocity_mps': vx_cmd,
-            'gain/kp_normal': gains['kp_normal'],
-            'gain/kd_normal': gains['kd_normal'],
-            'gain/kp_tangent_x': gains['kp_tangent_x'],
-            'gain/kd_tangent_x': gains['kd_tangent_x'],
-            'command/orientation_correction_deg': np.degrees(linear_correction_angle),
-            'tracking/orientation_error_deg': np.degrees(linear_tracking_angle),
+            'gap/origin position along normal [m]': gap_origin_normal_coord,
+            'normal tracking/target position [m]': gap_normal_coord,
+            'normal tracking/ee measured position [m]': ee_measured_normal_coord,
+            'normal tracking/error target minus ee [m]': y_err,
+            'normal tracking/command velocity [m/s]': vy_cmd,
+            'tangent tracking/target position [m]': gap_tangent_target_coord,
+            'tangent tracking/ee measured position [m]': ee_measured_tangent_coord,
+            'tangent tracking/error target minus ee [m]': x_err,
+            'tangent tracking/command velocity [m/s]': vx_cmd,
+            'orientation/commanded change from nominal [deg]': np.degrees(linear_correction_angle),
+            'orientation/tracking error commanded vs ee [deg]': np.degrees(linear_tracking_angle),
         },
     )
 

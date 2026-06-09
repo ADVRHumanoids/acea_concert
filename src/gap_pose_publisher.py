@@ -7,8 +7,12 @@ background subprocess (gz topic -e) and publishes:
 
   /gap/pose_world  (PoseStamped, frame: world)      – gap centre in world
   /gap/pose_robot  (PoseStamped, frame: base_link)  – gap in robot base frame
+  /gap/x_axis_world (Vector3Stamped, frame: world)  – unit gap x direction
   /gap/y_axis_world (Vector3Stamped, frame: world)  – unit y-gap direction
+  /gap/z_axis_world (Vector3Stamped, frame: world)  – unit gap z direction
+  /gap/x_axis_robot (Vector3Stamped, frame: base_link) – direction in base
   /gap/y_axis_robot (Vector3Stamped, frame: base_link) – direction in base
+  /gap/z_axis_robot (Vector3Stamped, frame: base_link) – direction in base
   /robot/base_pose (PoseStamped, frame: world)      – robot base in world
 
 No ros_gz_bridge configuration needed — works out of the box.
@@ -65,6 +69,40 @@ def _gap_y_axis(xyz_left: np.ndarray, xyz_right: np.ndarray) -> np.ndarray:
     if norm < 1e-9:
         raise ValueError("Cannot compute y-gap axis: pipe centres coincide")
     return gap_y / norm
+
+
+def _unit_vector(v: np.ndarray) -> np.ndarray | None:
+    norm = np.linalg.norm(v)
+    if norm < 1e-9:
+        return None
+    return v / norm
+
+
+def _gap_frame_axes(gap_y_world: np.ndarray,
+                    pipe_quat_world: np.ndarray):
+    """Build a right-handed gap frame from ground-truth pipe pose."""
+    y_axis = _unit_vector(gap_y_world)
+    if y_axis is None:
+        raise ValueError("Cannot compute gap frame: invalid y-axis")
+
+    # The pipe model local +X defines the nominal radial x direction. Project it
+    # onto the gap plane to keep it orthogonal to the centre-to-centre y-axis.
+    x_seed = _quat_rotate(pipe_quat_world, np.array([1.0, 0.0, 0.0]))
+    x_axis = x_seed - np.dot(x_seed, y_axis) * y_axis
+    x_axis = _unit_vector(x_axis)
+
+    if x_axis is None:
+        z_seed = np.array([0.0, 0.0, 1.0])
+        z_axis = z_seed - np.dot(z_seed, y_axis) * y_axis
+        z_axis = _unit_vector(z_axis)
+        if z_axis is None:
+            x_axis = np.array([1.0, 0.0, 0.0])
+        else:
+            x_axis = _unit_vector(np.cross(y_axis, z_axis))
+
+    z_axis = _unit_vector(np.cross(x_axis, y_axis))
+    x_axis = _unit_vector(np.cross(y_axis, z_axis))
+    return x_axis, y_axis, z_axis
 
 
 def _pose_stamped(frame_id: str, xyz: np.ndarray,
@@ -166,8 +204,12 @@ class GapPosePublisher(Node):
 
         self._pub_gap_world  = self.create_publisher(PoseStamped, '/gap/pose_world',  10)
         self._pub_gap_robot  = self.create_publisher(PoseStamped, '/gap/pose_robot',  10)
+        self._pub_gap_x_world = self.create_publisher(Vector3Stamped, '/gap/x_axis_world', 10)
         self._pub_gap_y_world = self.create_publisher(Vector3Stamped, '/gap/y_axis_world', 10)
+        self._pub_gap_z_world = self.create_publisher(Vector3Stamped, '/gap/z_axis_world', 10)
+        self._pub_gap_x_robot = self.create_publisher(Vector3Stamped, '/gap/x_axis_robot', 10)
         self._pub_gap_y_robot = self.create_publisher(Vector3Stamped, '/gap/y_axis_robot', 10)
+        self._pub_gap_z_robot = self.create_publisher(Vector3Stamped, '/gap/z_axis_robot', 10)
         self._pub_robot_base = self.create_publisher(PoseStamped, '/robot/base_pose', 10)
 
         # Latest parsed poses {name: (xyz, quat)}
@@ -234,17 +276,21 @@ class GapPosePublisher(Node):
 
         robot_pose_name = ROBOT_BASE_LINK if has_robot_base else ROBOT_MODEL
         robot_xyz,  robot_quat  = poses[robot_pose_name]
-        xyz_left,   _           = poses[GAP_MODEL_LEFT]
+        xyz_left,   quat_left   = poses[GAP_MODEL_LEFT]
         xyz_right,  _           = poses[GAP_MODEL_RIGHT]
 
         # ── Gap centre (world) ────────────────────────────────────────────────
         gap_world = (xyz_left + xyz_right) / 2.0
 
-        # ── Y-gap direction (world and base_link) ─────────────────────────────
-        # This is the orientation information that is directly defined by the
-        # two pipe centres: the unit vector from right pipe to left pipe.
+        # ── Gap frame directions (world and base_link) ───────────────────────
+        # y is directly defined by the two pipe centres. x/z come from the pipe
+        # model orientation, projected into a right-handed frame.
         gap_y_world = _gap_y_axis(xyz_left, xyz_right)
+        gap_x_world, gap_y_world, gap_z_world = _gap_frame_axes(
+            gap_y_world, quat_left)
+        gap_x_robot = _rotate_world_vector_to_frame(robot_quat, gap_x_world)
         gap_y_robot = _rotate_world_vector_to_frame(robot_quat, gap_y_world)
+        gap_z_robot = _rotate_world_vector_to_frame(robot_quat, gap_z_world)
 
         # ── Gap pose in robot base_link frame ─────────────────────────────────
         # Position: rotate + translate
@@ -255,10 +301,18 @@ class GapPosePublisher(Node):
             _pose_stamped(WORLD_FRAME, gap_world,    identity_quat,  stamp))
         self._pub_gap_robot.publish(
             _pose_stamped(BASE_FRAME,  gap_in_robot, identity_quat,  stamp))
+        self._pub_gap_x_world.publish(
+            _vector3_stamped(WORLD_FRAME, gap_x_world, stamp))
         self._pub_gap_y_world.publish(
             _vector3_stamped(WORLD_FRAME, gap_y_world, stamp))
+        self._pub_gap_z_world.publish(
+            _vector3_stamped(WORLD_FRAME, gap_z_world, stamp))
+        self._pub_gap_x_robot.publish(
+            _vector3_stamped(BASE_FRAME, gap_x_robot, stamp))
         self._pub_gap_y_robot.publish(
             _vector3_stamped(BASE_FRAME, gap_y_robot, stamp))
+        self._pub_gap_z_robot.publish(
+            _vector3_stamped(BASE_FRAME, gap_z_robot, stamp))
         self._pub_robot_base.publish(
             _pose_stamped(WORLD_FRAME, robot_xyz,    robot_quat,      stamp))
 
@@ -268,8 +322,12 @@ class GapPosePublisher(Node):
         self.get_logger().info(
             f"gap world y={gap_world[1]:.4f}  |  "
             f"gap robot y={gap_in_robot[1]:.4f}  |  "
+            f"gap_x_robot=[{gap_x_robot[0]:+.3f}, "
+            f"{gap_x_robot[1]:+.3f}, {gap_x_robot[2]:+.3f}]  |  "
             f"gap_y_robot=[{gap_y_robot[0]:+.3f}, "
             f"{gap_y_robot[1]:+.3f}, {gap_y_robot[2]:+.3f}]  |  "
+            f"gap_z_robot=[{gap_z_robot[0]:+.3f}, "
+            f"{gap_z_robot[1]:+.3f}, {gap_z_robot[2]:+.3f}]  |  "
             f"y-gap yaw from base +Y={np.degrees(gap_yaw_robot):.2f}°",
             throttle_duration_sec=1.0,
         )

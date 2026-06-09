@@ -3,6 +3,7 @@ import numpy as np
 
 BASE_X_AXIS_ROBOT = np.array([1.0, 0.0, 0.0])
 BASE_Y_AXIS_ROBOT = np.array([0.0, 1.0, 0.0])
+BASE_Z_AXIS_ROBOT = np.array([0.0, 0.0, 1.0])
 
 
 def unit_vector(v, fallback=None):
@@ -47,6 +48,15 @@ def gap_tangent_axis(gap_y_axis: np.ndarray) -> np.ndarray:
     if np.dot(tangent, BASE_X_AXIS_ROBOT) < 0.0:
         tangent = -tangent
     return tangent
+
+
+def gap_frame_axes(gap_y_axis: np.ndarray):
+    """Return a right-handed gap frame (x along pipe, y across gap, z up-ish)."""
+    y_axis = unit_vector(gap_y_axis, BASE_Y_AXIS_ROBOT)
+    x_axis = gap_tangent_axis(y_axis)
+    z_axis = unit_vector(np.cross(x_axis, y_axis), BASE_Z_AXIS_ROBOT)
+    x_axis = unit_vector(np.cross(y_axis, z_axis), x_axis)
+    return x_axis, y_axis, z_axis
 
 
 def rotation_with_y_axis(R_hint: np.ndarray,

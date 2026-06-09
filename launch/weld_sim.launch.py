@@ -27,24 +27,27 @@ PATH_TO_CONCERT_WS = Path("/home/user/concert_ws")
 PATH_TO_ACEA_CONCERT = PATH_TO_CONCERT_WS / "src" / "acea_concert"
 MODULAR_DESCRIPTION = str(PATH_TO_ACEA_CONCERT / "src" / "modular" / "concert_with_torch.py")
 GZ_RESOURCE_PATH = str(PATH_TO_CONCERT_WS / "install" / "share")
+MAT_FILE = PATH_TO_ACEA_CONCERT / "mat_files" / "weld_concert.mat"
 
-# ── Pipe geometry & placement ────────────────────────────────────────────────
-PIPE_RADIUS  = 0.5    # [m] outer radius of each pipe section
-PIPE_LENGTH  = 2.45   # [m] length of each half-pipe
-PIPE_GAP     = 0.01   # [m] gap between the two halves (at y=0)
-PIPE_X       = 1.5    # [m] distance in front of the robot
-PIPE_Z       = 1.5    # [m] height above ground
-# Derived: centre of each half = half_length + half_gap
-_pipe_y = PIPE_LENGTH / 2.0 + PIPE_GAP / 2.0
-# ─────────────────────────────────────────────────────────────────────────────
-
-matfile_path = '/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat'
-matdata = scipy.io.loadmat(matfile_path)
-if not os.path.exists(matfile_path):
-  print(f"File not found: {matfile_path}")
+if not MAT_FILE.exists():
+  print(f"File not found: {MAT_FILE}")
   sys.exit(1)
 
+# ── Pipe geometry & placement from weld_opt MAT file ────────────────────────
+matdata = scipy.io.loadmat(str(MAT_FILE))
 init_pos_robot = matdata['initial_robot_pose'][0]
+pipe_center = matdata['pos_center_pipe'].reshape(3)
+
+PIPE_RADIUS = float(matdata['radius_pipe'].reshape(-1)[0])
+PIPE_TOTAL_LENGTH = float(matdata['length_pipe'].reshape(-1)[0])
+PIPE_GAP = float(matdata['pipe_gap'].reshape(-1)[0])
+PIPE_HALF_LENGTH = (PIPE_TOTAL_LENGTH - PIPE_GAP) / 2.0
+PIPE_X = float(pipe_center[0])
+PIPE_Y = float(pipe_center[1])
+PIPE_Z = float(pipe_center[2])
+
+# Derived: centre of each half = half_length/2 + half_gap.
+_pipe_y = PIPE_HALF_LENGTH / 2.0 + PIPE_GAP / 2.0
 # ─────────────────────────────────────────────────────────────────────────────
 PIPE_SDF_TEMPLATE = """<?xml version="1.0" ?>
 <sdf version="1.6">
@@ -74,7 +77,7 @@ PIPE_SDF_TEMPLATE = """<?xml version="1.0" ?>
       </collision>
     </link>
   </model>
-</sdf>""".format(radius=PIPE_RADIUS, length=PIPE_LENGTH)
+</sdf>""".format(radius=PIPE_RADIUS, length=PIPE_HALF_LENGTH)
 
 PIPE_SDF_LEFT  = PIPE_SDF_TEMPLATE.format(name="weld_pipe_left")
 PIPE_SDF_RIGHT = PIPE_SDF_TEMPLATE.format(name="weld_pipe_right")
@@ -123,7 +126,7 @@ def generate_launch_description():
                     arguments=[
                         "-string", PIPE_SDF_LEFT,
                         "-x", str(PIPE_X - init_pos_robot[0]),
-                        "-y", str(_pipe_y - init_pos_robot[1]),
+                        "-y", str(PIPE_Y + _pipe_y - init_pos_robot[1]),
                         "-z", str(PIPE_Z),
                         "-R", "1.5708",
                         "-P", "0.0",
@@ -143,7 +146,7 @@ def generate_launch_description():
                     arguments=[
                         "-string", PIPE_SDF_RIGHT,
                         "-x", str(PIPE_X - init_pos_robot[0]),
-                        "-y", str(- _pipe_y - init_pos_robot[1]),
+                        "-y", str(PIPE_Y - _pipe_y - init_pos_robot[1]),
                         "-z", str(PIPE_Z),
                         "-R", "1.5708",
                         "-P", "0.0",

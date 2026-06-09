@@ -69,30 +69,48 @@ class ControllerRosInterface:
         for param_name, default_value in self._gain_defaults.items():
             self.node.declare_parameter(param_name, default_value)
 
-        self._gap_pos_robot: np.ndarray | None = None
-        self._gap_y_axis_robot: np.ndarray | None = None
+        self._gap_origin_base: np.ndarray | None = None
+        self._gap_x_axis_base: np.ndarray | None = None
+        self._gap_y_axis_base: np.ndarray | None = None
+        self._gap_z_axis_base: np.ndarray | None = None
 
         # FOR THE TIME BEING, GROUND TRUTH
         self.node.create_subscription(
             PoseStamped, '/gap/pose_robot', self._on_gap_pose_robot, 10)
         self.node.create_subscription(
+            Vector3Stamped, '/gap/x_axis_robot', self._on_gap_x_axis_robot, 10)
+        self.node.create_subscription(
             Vector3Stamped, '/gap/y_axis_robot', self._on_gap_y_axis_robot, 10)
+        self.node.create_subscription(
+            Vector3Stamped, '/gap/z_axis_robot', self._on_gap_z_axis_robot, 10)
 
         self._ros_thread = threading.Thread(
             target=rclpy.spin, args=(self.node,), daemon=True)
         self._ros_thread.start()
 
     @property
-    def gap_pos_robot(self) -> np.ndarray | None:
-        if self._gap_pos_robot is None:
+    def gap_origin_base(self) -> np.ndarray | None:
+        if self._gap_origin_base is None:
             return None
-        return self._gap_pos_robot.copy()
+        return self._gap_origin_base.copy()
 
     @property
-    def gap_y_axis_robot(self) -> np.ndarray | None:
-        if self._gap_y_axis_robot is None:
+    def gap_y_axis_base(self) -> np.ndarray | None:
+        if self._gap_y_axis_base is None:
             return None
-        return self._gap_y_axis_robot.copy()
+        return self._gap_y_axis_base.copy()
+
+    @property
+    def gap_axes_base(self) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        if (self._gap_x_axis_base is None
+                or self._gap_y_axis_base is None
+                or self._gap_z_axis_base is None):
+            return None
+        return (
+            self._gap_x_axis_base.copy(),
+            self._gap_y_axis_base.copy(),
+            self._gap_z_axis_base.copy(),
+        )
 
     def controller_gains(self) -> dict[str, float]:
         return {
@@ -105,14 +123,14 @@ class ControllerRosInterface:
 
     def publish_controller_state(self, ee_pose_des, ee_pose_sent, ee_pose_ik,
                                  ee_pose_cur, frame_id: str,
-                                 gap_y_axis_robot: np.ndarray,
+                                 gap_y_axis_base: np.ndarray,
                                  metrics: dict[str, float]):
         self._publish_pose(self._pub_des, ee_pose_des, frame_id)
         self._publish_pose(self._pub_sent, ee_pose_sent, frame_id)
         self._publish_pose(self._pub_ik, ee_pose_ik, frame_id)
         self._publish_pose(self._pub_cur, ee_pose_cur, frame_id)
         self.diagnostic_plotter.publish_controller_status(
-            gap_y_axis_robot, metrics)
+            gap_y_axis_base, metrics)
 
     def _float_param(self, name: str, default: float) -> float:
         value = self.node.get_parameter(name).value
@@ -134,17 +152,27 @@ class ControllerRosInterface:
         return value
 
     def _on_gap_pose_robot(self, msg: PoseStamped):
-        self._gap_pos_robot = np.array([
+        self._gap_origin_base = np.array([
             msg.pose.position.x,
             msg.pose.position.y,
             msg.pose.position.z,
         ], dtype=float)
 
+    def _on_gap_x_axis_robot(self, msg: Vector3Stamped):
+        self._gap_x_axis_base = self._normalized_axis(msg)
+
     def _on_gap_y_axis_robot(self, msg: Vector3Stamped):
+        self._gap_y_axis_base = self._normalized_axis(msg)
+
+    def _on_gap_z_axis_robot(self, msg: Vector3Stamped):
+        self._gap_z_axis_base = self._normalized_axis(msg)
+
+    def _normalized_axis(self, msg: Vector3Stamped) -> np.ndarray | None:
         axis = np.array([msg.vector.x, msg.vector.y, msg.vector.z], dtype=float)
         norm = np.linalg.norm(axis)
         if norm > 1e-9:
-            self._gap_y_axis_robot = axis / norm
+            return axis / norm
+        return None
 
     def _publish_pose(self, pub, affine, frame_id: str):
         msg = PoseStamped()

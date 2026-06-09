@@ -73,6 +73,7 @@ footprint_robot_x = 1.2
 footprint_robot_y = 0.7
 
 length_pipe = 5.0
+pipe_gap = 0.01
 pos_center_pipe = [1.5, 0.0, 1.5]
 orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
 radius_pipe = 0.5
@@ -301,11 +302,44 @@ for node in range(ns - 1):
     tau_node = np.asarray(tau_node).flatten()
     tau[:, node] = tau_node
 
+# Store the planned weld path also in frames that are useful at execution time.
+# q[:7] is the optimized floating-base pose in world: xyz + quaternion xyzw.
+desired_traj_weld_pos_base = np.zeros_like(circular_pos)
+for node in range(ns + 1):
+    base_pos_world = solution['q'][:3, node]
+    base_quat_world = solution['q'][3:7, node]
+    desired_traj_weld_pos_base[:, node] = R.from_quat(
+        base_quat_world).inv().apply(circular_pos[:, node] - base_pos_world)
+
+# Nominal gap frame used by the execution controller:
+# origin = pipe centre, x = pipe/weld tangent, y = gap normal, z = vertical.
+pipe_center_world = np.asarray(pos_center_pipe, dtype=float).reshape(3)
+pipe_x_axis_world = np.array([1.0, 0.0, 0.0])
+pipe_y_axis_world = np.array([0.0, 1.0, 0.0])
+pipe_z_axis_world = np.array([0.0, 0.0, 1.0])
+pipe_R_world = np.column_stack([
+    pipe_x_axis_world,
+    pipe_y_axis_world,
+    pipe_z_axis_world,
+])
+desired_traj_weld_pos_gap = (
+    pipe_R_world.T @ (circular_pos - pipe_center_world.reshape(3, 1))
+)
+desired_traj_weld_quat_gap = np.zeros_like(circular_ori)
+for node in range(ns + 1):
+    world_R_ee = R.from_quat(circular_ori[:, node]).as_matrix()
+    gap_R_ee = pipe_R_world.T @ world_R_ee
+    desired_traj_weld_quat_gap[:, node] = R.from_matrix(gap_R_ee).as_quat()
+
+pos_center_pipe_base = R.from_quat(solution['q'][3:7, 0]).inv().apply(
+    pipe_center_world - solution['q'][:3, 0])
+
 
 name_file = "weld_concert"
 if not os.path.exists(f"{PATH_TO_ACEA_CONCERT}/mat_files"):
     os.mkdir(f"{PATH_TO_ACEA_CONCERT}/mat_files")
-ms = mat_storer.matStorer(f"{PATH_TO_ACEA_CONCERT}/mat_files/" + name_file + '.mat')
+mat_file_path = f"{PATH_TO_ACEA_CONCERT}/mat_files/" + name_file + '.mat'
+ms = mat_storer.matStorer(mat_file_path)
 info_dict = dict(
     n_nodes=prb.getNNodes(),
     dt=prb.getDt(),
@@ -313,6 +347,7 @@ info_dict = dict(
     orientation_pipe=orientation_pipe,
     radius_pipe=radius_pipe,
     length_pipe=length_pipe,
+    pipe_gap=pipe_gap,
     initial_zone_center_x=center_x,
     initial_zone_center_y=center_y,
     initial_zone_size_x=size_x,
@@ -324,10 +359,18 @@ info_dict = dict(
     tau=tau,
     joint_names=model.kd.joint_names(),
     desired_traj_weld_pos=circular_pos,
+    desired_traj_weld_pos_base=desired_traj_weld_pos_base,
+    desired_traj_weld_pos_gap=desired_traj_weld_pos_gap,
+    desired_traj_weld_quat_gap=desired_traj_weld_quat_gap,
+    pos_center_pipe_base=pos_center_pipe_base,
+    pipe_x_axis_world=pipe_x_axis_world,
+    pipe_y_axis_world=pipe_y_axis_world,
+    pipe_z_axis_world=pipe_z_axis_world,
     initial_robot_pose=solution['q'][:, 0], 
 )
 
 ms.store({**solution, **info_dict})
+print(f"[weld_opt] Saved optimization result to: {mat_file_path}")
 
 
 q_forward = solution['q']

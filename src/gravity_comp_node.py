@@ -5,8 +5,8 @@ A minimal ROS 2 node that sends only gravity compensation torques to the robot.
 import rclpy
 from rclpy.node import Node
 from xbot2_interface import pyxbot2_interface as xbi
-import time
-from utils.ros_utils import fetch_robot_description
+
+from controller_ros import fetch_robot_description
 
 class GravityCompNode(Node):
     def __init__(self):

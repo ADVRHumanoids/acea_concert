@@ -5,7 +5,7 @@ import sys
 import os
 
 # Hardcoded mat file path
-matfile = os.path.join(os.path.dirname(__file__), '../mat_files/weld_concert_even_better.mat')
+matfile = os.path.join(os.path.dirname(__file__), '../mat_files/weld_concert.mat')
 if not os.path.exists(matfile):
     print(f"File not found: {matfile}")
     sys.exit(1)

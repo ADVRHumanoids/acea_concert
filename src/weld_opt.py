@@ -76,7 +76,20 @@ length_pipe = 5.0
 pipe_gap = 0.01
 pos_center_pipe = [1.5, 0.0, 1.5]
 orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
+OPTIMIZE_PIPE_HEIGHT = False
+margin_around_pipe_height = 1.0 # how much the pipe height can be optimized around the nominal height (in both directions)
+pipe_z_bounds = (pos_center_pipe[2] - margin_around_pipe_height, pos_center_pipe[2] + margin_around_pipe_height)
+MINIMIZE_CRITICAL_JOINT_TORQUES = True
+TORQUE_COST_WEIGHT = 1e-1
+CRITICAL_TORQUE_JOINTS = ('J1_E', 'J2_E', 'J1_F', 'J2_F', 'J3_F', 'J4_F', 'J5_F', 'J6_F')
 radius_pipe = 0.1
+weld_standoff_from_pipe = 0.02  # EE path distance from pipe surface [m]
+weld_trajectory_radius = radius_pipe + weld_standoff_from_pipe
+if weld_trajectory_radius <= 0.0:
+    raise ValueError(
+        'weld_trajectory_radius must be positive. Check radius_pipe and '
+        'weld_standoff_from_pipe.'
+    )
 
 # first half
 angle_weld_start = 1/2 *np.pi
@@ -90,7 +103,7 @@ angle_weld_end = 3/2 * np.pi
 
 weld_upside_down = True
 
-margin_x = 0. # Some margin around the pipe
+margin_x = 0. # Some margin around the pipe w.r.t. the initial robot position
 bound_initial_pos_x_low = -0.5 # 0 is good!
 bound_initial_pos_x_high = pos_center_pipe[0] - radius_pipe - footprint_robot_x/2 - margin_x 
 
@@ -107,36 +120,75 @@ size_y = abs(bound_initial_pos_y_high - bound_initial_pos_y_low)
 circular_pos, circular_ori = generate_circular_trajectory(
     ns,
     center=pos_center_pipe,
-    radius=radius_pipe,
+    radius=weld_trajectory_radius,
     angle_start=angle_weld_start,
     angle_end=angle_weld_end,
     upside_down=weld_upside_down
 )
+pipe_center_nominal = np.asarray(pos_center_pipe, dtype=float).reshape(3, 1)
+circle_offset = circular_pos - pipe_center_nominal
+
+VIRTUAL_JOINT_NAMES = {'universe', 'reference'}
+FLOATING_BASE_VELOCITY_DOF = 6
+
+
+def normalized_joint_names(joint_names):
+    return [str(name).strip() for name in joint_names]
+
+
+def actuated_joint_names(joint_names):
+    return [
+        name for name in normalized_joint_names(joint_names)
+        if name not in VIRTUAL_JOINT_NAMES
+    ]
+
+
+def torque_indices_for_joints(joint_names, selected_joint_names):
+    actuated_names = actuated_joint_names(joint_names)
+    torque_indices = []
+    missing_names = []
+
+    for name in selected_joint_names:
+        if name not in actuated_names:
+            missing_names.append(name)
+            continue
+        torque_indices.append(
+            FLOATING_BASE_VELOCITY_DOF + actuated_names.index(name))
+
+    return torque_indices, missing_names
 
 # =================================================================================
 # Initialize collision checker
-coll_checker = CollisionChecker(urdf, srdf)
-coll_checker.add_pipe('weld_pipe', radius_pipe, length_pipe, pos_center_pipe, orientation_pipe)
+def make_collision_checker(pipe_center):
+    coll_checker = CollisionChecker(urdf, srdf)
+    coll_checker.add_pipe(
+        'weld_pipe', radius_pipe, length_pipe, pipe_center, orientation_pipe)
+    return coll_checker
 # =================================================================================
 
 # Initialize RViz scene with pipe, footprint, and trajectory markers
 from viz.init_scene import InitScene
-init_scene = InitScene(
-    path_ws=PATH_TO_ACEA_CONCERT/"src"/"viz",
-    pos_center_pipe=pos_center_pipe,
-    radius_pipe=radius_pipe,
-    length_pipe=length_pipe,
-    orientation_pipe=orientation_pipe,
-    footprint_robot_x=footprint_robot_x,
-    footprint_robot_y=footprint_robot_y,
-    center_x=center_x,
-    center_y=center_y,
-    size_x=size_x,
-    size_y=size_y,
-    position=circular_pos
-)
-init_scene.kill_existing_markers()
-init_scene.launch_scene()
+
+def launch_rviz_scene(pipe_center, trajectory):
+    init_scene = InitScene(
+        path_ws=PATH_TO_ACEA_CONCERT/"src"/"viz",
+        pos_center_pipe=pipe_center,
+        radius_pipe=radius_pipe,
+        length_pipe=length_pipe,
+        orientation_pipe=orientation_pipe,
+        footprint_robot_x=footprint_robot_x,
+        footprint_robot_y=footprint_robot_y,
+        center_x=center_x,
+        center_y=center_y,
+        size_x=size_x,
+        size_y=size_y,
+        position=trajectory,
+    )
+    init_scene.kill_existing_markers()
+    init_scene.launch_scene()
+
+
+launch_rviz_scene(pos_center_pipe, circular_pos)
 
 # =================================================================================
 # Set base_init so base is under the first trajectory point
@@ -179,22 +231,28 @@ fk_ee_rot = R.from_matrix((kin_dyn.fk('ee_F')(q=model.q0)['ee_rot'].full())).as_
 
 print(f"[INFO] Initial ee_F pos: {fk_ee_pos}, rot (quat): {fk_ee_rot}")
 
-position_aug = np.full((7, ns + 1), 0.0)
-position_aug[:3, :] = circular_pos
-
 orientation_aug = np.full((7, ns + 1), 0.0)
 orientation_aug[3:, :] = circular_ori
 
-pos_task_name = 'ee_pos'
 ori_task_name = 'ee_ori'
 
-ee_pos_task = ti.getTask(pos_task_name)
 ee_ori_task = ti.getTask(ori_task_name)
 
-ee_pos_task.setRef(position_aug)
+# Alternative old fixed-reference task path, kept only as a reference. The
+# active path below uses symbolic EE position constraints in both modes.
+# position_aug = np.full((7, ns + 1), 0.0)
+# position_aug[:3, :] = circular_pos
+# ee_pos_task = ti.getTask('ee_pos')
+# ee_pos_task.setRef(position_aug)
+
 ee_ori_task.setRef(orientation_aug)
 
-print(f"circular trajectory applied: center={pos_center_pipe}, radius={radius_pipe}")
+print(
+    f"circular trajectory applied: center={pos_center_pipe}, "
+    f"pipe_radius={radius_pipe}, "
+    f"standoff={weld_standoff_from_pipe}, "
+    f"trajectory_radius={weld_trajectory_radius}"
+)
 print(f"angle range: [{angle_weld_start}, {angle_weld_end}] rad, steps: {ns + 1}")
 
 # Set base pose in XZ plane and pitch-only orientation (pitch=0)
@@ -213,6 +271,31 @@ ti.model.q[3:7].setBounds(tmp_q0[3:7], tmp_q0[3:7])
 # Create optimization variable for base XY
 base_pos_xy = prb.createSingleVariable('base_pos_xy', 2)
 prb.createConstraint('base_pos_xy_constraint', model.q[:2] - base_pos_xy)
+
+# The EE position constraints below replace the fixed ee_pos task. With
+# OPTIMIZE_PIPE_HEIGHT=True the weld path moves with a decision variable;
+# otherwise the same constraints use the fixed nominal pipe height.
+if OPTIMIZE_PIPE_HEIGHT:
+    pipe_z = prb.createSingleVariable('pipe_z', 1)
+    pipe_z.setBounds(pipe_z_bounds[0], pipe_z_bounds[1])
+    pipe_z.setInitialGuess(pos_center_pipe[2])
+else:
+    pipe_z = float(pos_center_pipe[2])
+
+fk_ee_pos = kin_dyn.fk('ee_F')(q=model.q)['ee_pos']
+pipe_x = float(pos_center_pipe[0])
+pipe_y = float(pos_center_pipe[1])
+for node in range(ns + 1):
+    ee_pos_ref = cs.vertcat(
+        pipe_x + circle_offset[0, node],
+        pipe_y + circle_offset[1, node],
+        pipe_z + circle_offset[2, node],
+    )
+    prb.createConstraint(
+        f'ee_pos_pipe_height_{node}',
+        fk_ee_pos - ee_pos_ref,
+        nodes=node,
+    )
 
 # robot starts with zero velocity and ends with zero velocity
 # ti.model.q[0].setBounds(bound_initial_pos_x_low, bound_initial_pos_x_high) 
@@ -237,10 +320,41 @@ cnsrt_vel_linear_guide.setBounds(0, np.inf)
 # constant_vel_yaw_guide = prb.createIntermediateConstraint('yaw_axis_constant_velocity', model.a[15])
 # constant_vel_yaw_guide.setBous(0., 0.)
 
-# id_fn = kin_dyn_utils.InverseDynamics(kin_dyn) # force_reference_frame = cas_kin_dyn.CasadinDyn.LOCAL
-# tau_weig_min = 1e1
-# tau = id_fn.call(modeq, 0., 0.)
-# prb.createResidual('tau_cost', tau_weight_min * tau)
+critical_torque_indices = []
+missing_critical_torque_joints = []
+if MINIMIZE_CRITICAL_JOINT_TORQUES:
+    critical_torque_indices, missing_critical_torque_joints = torque_indices_for_joints(
+        model.kd.joint_names(),
+        CRITICAL_TORQUE_JOINTS,
+    )
+
+    if missing_critical_torque_joints:
+        print(
+            '[weld_opt] Warning: torque-cost joints not found: '
+            f'{missing_critical_torque_joints}'
+        )
+
+    if critical_torque_indices:
+        id_fn_cost = kin_dyn_utils.InverseDynamics(kin_dyn)
+        tau_sym = id_fn_cost.call(
+            model.q,
+            cs.SX.zeros(model.v.shape[0], 1),
+            cs.SX.zeros(model.a.shape[0], 1),
+        )
+        critical_tau = cs.vertcat(*[
+            tau_sym[idx] for idx in critical_torque_indices
+        ])
+        prb.createIntermediateResidual(
+            'min_critical_joint_torque',
+            TORQUE_COST_WEIGHT * critical_tau,
+        )
+        print(
+            '[weld_opt] Minimizing quasi-static torques for joints '
+            f'{CRITICAL_TORQUE_JOINTS} with tau rows {critical_torque_indices} '
+            f'and weight {TORQUE_COST_WEIGHT}'
+        )
+    else:
+        print('[weld_opt] Warning: torque minimization enabled but no joints matched.')
 
 ti.finalize()
 
@@ -288,6 +402,14 @@ while is_colliding == True or solution_found == False:
 
     solution = ti.solution
 
+    pipe_z_current = (
+        float(np.asarray(solution['pipe_z']).reshape(-1)[0])
+        if OPTIMIZE_PIPE_HEIGHT else float(pos_center_pipe[2])
+    )
+    pos_center_pipe_current = np.asarray(pos_center_pipe, dtype=float).copy()
+    pos_center_pipe_current[2] = pipe_z_current
+    coll_checker = make_collision_checker(pos_center_pipe_current)
+
     is_colliding = False
     for node in range(ns + 1):
         # print(f"Node {node}:")
@@ -298,27 +420,45 @@ while is_colliding == True or solution_found == False:
         
         # print("-----")
 
+pipe_z_opt = (
+    float(np.asarray(solution['pipe_z']).reshape(-1)[0])
+    if OPTIMIZE_PIPE_HEIGHT else float(pos_center_pipe[2])
+)
+pos_center_pipe_opt = np.asarray(pos_center_pipe, dtype=float).copy()
+pos_center_pipe_opt[2] = pipe_z_opt
+circular_pos_opt = circle_offset + pos_center_pipe_opt.reshape(3, 1)
+if OPTIMIZE_PIPE_HEIGHT:
+    print(f"[weld_opt] Optimized pipe height: z={pipe_z_opt:.4f} m")
+else:
+    print(f"[weld_opt] Fixed pipe height: z={pipe_z_opt:.4f} m")
+launch_rviz_scene(pos_center_pipe_opt, circular_pos_opt)
+
 id_fn = kin_dyn_utils.InverseDynamics(kin_dyn) # force_reference_frame = cas_kin_dyn.CasadiKinDyn.LOCAL
-# Compute tau for all nodes
+# Compute quasi-static tau for all nodes: slow welding assumes v=0 and a=0.
 tau = np.zeros_like(solution['a'])
-for node in range(ns - 1):
-    # tau_node = id_fn.call(solution['q'][:, node], solution['v'][:, node], solution['a'][:, node])
-    tau_node = id_fn.call(solution['q'][:, node], 0., 0.)
+zero_velocity = np.zeros(solution['v'].shape[0])
+zero_acceleration = np.zeros(solution['a'].shape[0])
+for node in range(tau.shape[1]):
+    tau_node = id_fn.call(
+        solution['q'][:, node],
+        zero_velocity,
+        zero_acceleration,
+    )
     tau_node = np.asarray(tau_node).flatten()
     tau[:, node] = tau_node
 
 # Store the planned weld path also in frames that are useful at execution time.
 # q[:7] is the optimized floating-base pose in world: xyz + quaternion xyzw.
-desired_traj_weld_pos_base = np.zeros_like(circular_pos)
+desired_traj_weld_pos_base = np.zeros_like(circular_pos_opt)
 for node in range(ns + 1):
     base_pos_world = solution['q'][:3, node]
     base_quat_world = solution['q'][3:7, node]
     desired_traj_weld_pos_base[:, node] = R.from_quat(
-        base_quat_world).inv().apply(circular_pos[:, node] - base_pos_world)
+        base_quat_world).inv().apply(circular_pos_opt[:, node] - base_pos_world)
 
 # Nominal gap frame used by the execution controller:
 # origin = pipe centre, x = pipe/weld tangent, y = gap normal, z = vertical.
-pipe_center_world = np.asarray(pos_center_pipe, dtype=float).reshape(3)
+pipe_center_world = np.asarray(pos_center_pipe_opt, dtype=float).reshape(3)
 pipe_x_axis_world = np.array([1.0, 0.0, 0.0])
 pipe_y_axis_world = np.array([0.0, 1.0, 0.0])
 pipe_z_axis_world = np.array([0.0, 0.0, 1.0])
@@ -328,7 +468,7 @@ pipe_R_world = np.column_stack([
     pipe_z_axis_world,
 ])
 desired_traj_weld_pos_gap = (
-    pipe_R_world.T @ (circular_pos - pipe_center_world.reshape(3, 1))
+    pipe_R_world.T @ (circular_pos_opt - pipe_center_world.reshape(3, 1))
 )
 desired_traj_weld_quat_gap = np.zeros_like(circular_ori)
 for node in range(ns + 1):
@@ -348,9 +488,19 @@ ms = mat_storer.matStorer(mat_file_path)
 info_dict = dict(
     n_nodes=prb.getNNodes(),
     dt=prb.getDt(),
-    pos_center_pipe=pos_center_pipe,
+    pos_center_pipe=pos_center_pipe_opt,
+    pipe_z=pipe_z_opt,
+    optimize_pipe_height=OPTIMIZE_PIPE_HEIGHT,
+    pipe_z_bounds=np.asarray(pipe_z_bounds),
+    minimize_critical_joint_torques=MINIMIZE_CRITICAL_JOINT_TORQUES,
+    critical_torque_joint_names=np.asarray(CRITICAL_TORQUE_JOINTS),
+    critical_torque_indices=np.asarray(critical_torque_indices, dtype=int),
+    missing_critical_torque_joints=np.asarray(missing_critical_torque_joints),
+    torque_cost_weight=TORQUE_COST_WEIGHT,
     orientation_pipe=orientation_pipe,
     radius_pipe=radius_pipe,
+    weld_standoff_from_pipe=weld_standoff_from_pipe,
+    weld_trajectory_radius=weld_trajectory_radius,
     length_pipe=length_pipe,
     pipe_gap=pipe_gap,
     initial_zone_center_x=center_x,
@@ -363,7 +513,7 @@ info_dict = dict(
     angle_weld_end=angle_weld_end,
     tau=tau,
     joint_names=model.kd.joint_names(),
-    desired_traj_weld_pos=circular_pos,
+    desired_traj_weld_pos=circular_pos_opt,
     desired_traj_weld_pos_base=desired_traj_weld_pos_base,
     desired_traj_weld_pos_gap=desired_traj_weld_pos_gap,
     desired_traj_weld_quat_gap=desired_traj_weld_quat_gap,
@@ -377,7 +527,7 @@ info_dict = dict(
 ms.store({**solution, **info_dict})
 print(f"[weld_opt] Saved optimization result to: {mat_file_path}")
 
-print(f"[INFO] Final initial robot pose: {solution['q'][:, 0]}")
+print(f"[INFO] Final initial robot pose: {solution['q'][:3, 0]}")
 
 
 q_forward = solution['q']

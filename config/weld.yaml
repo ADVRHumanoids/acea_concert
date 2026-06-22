@@ -20,7 +20,9 @@ solver:
 #  print_time: 0
 
 constraints:
-  - ee_pos
+  # weld_opt.py creates the ee position constraints directly so pipe height can
+  # be either fixed or optimized with the OPTIMIZE_PIPE_HEIGHT code flag.
+  # - ee_pos
   - ee_ori
 
 costs:
@@ -98,21 +100,21 @@ acceleration_regularization:
 acceleration_regularization_prismatic_yaw:
   type: Regularization
   variable_name: a
-  indices: [6]
+  indices: [14]
   nodes: all
   weight: *w_acc_prism_yaw
 
 acceleration_regularization_prismatic_z:
   type: Regularization
   variable_name: a
-  indices: [7]
+  indices: [15]
   nodes: all
   weight: *w_acc_prism_z
 
 acceleration_regularization_arm:
   type: Regularization
   variable_name: a
-  indices: [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+  indices: [16, 17, 18, 19, 20, 21]
   nodes: all
   weight: *w_acc_arm
 
@@ -120,5 +122,3 @@ acceleration_regularization_arm:
 # joint_limits:
 #   type: JointLimits
 #   nodes: all
-
-

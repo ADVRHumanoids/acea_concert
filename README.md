@@ -6,10 +6,19 @@ Tools for optimizing and executing the CONCERT welding trajectory.
 
 The workflow is split into two parts:
 
-1. Offline optimization: generate the optimal trajectory and save it to a MAT file.
-2. Online controller: run the simulation, publish the current gap pose, compensate gravity, and execute the controller.
+1. Offline: run `weld_opt.py`, optionally replay with `replayer.py`, and inspect the RViz visualization.
+2. Online: launch simulation, start XBot GUI, publish the current gap pose, compensate gravity, home to the optimized start, drive the base to the optimized pose, and run the controller.
 
 ## 1. Offline Optimization
+
+Command pipeline:
+
+```bash
+cd /home/user/concert_ws/src/acea_concert
+python3 src/weld_opt.py
+python3 src/replayer.py
+rviz2 -d rviz/rviz_config.rviz
+```
 
 Run the optimizer from the package root:
 
@@ -26,6 +35,13 @@ mat_files/weld_concert.mat
 
 The MAT file contains the optimized joint trajectory, the pipe/gap geometry, and the weld trajectory expressed in the gap frame. The online controller expects this file to exist before starting the simulation.
 
+Optionally replay the optimized trajectory:
+
+```bash
+cd /home/user/concert_ws/src/acea_concert
+python3 src/replayer.py
+```
+
 Use RViz to inspect the robot, pipe, and optimized weld trajectory:
 
 ```bash
@@ -36,6 +52,16 @@ rviz2 -d rviz/rviz_config.rviz
 
 Start each component in a separate terminal.
 
+Run in this order:
+
+1. `weld_sim.launch.py`
+2. XBot GUI
+3. gap pose GUI / publisher
+4. `gravity_comp_node.py`
+5. `home_to_weld_start.py`
+6. `drive_base_to_weld_pose.py`
+7. `controller.py`
+
 ### Simulation
 
 ```bash
@@ -45,7 +71,11 @@ ros2 launch acea_concert weld_sim.launch.py
 
 This launches the robot simulation and spawns the two pipe halves using the geometry stored in `mat_files/weld_concert.mat`.
 
-### Gap Pose Ground Truth
+### XBot GUI
+
+Start the XBot GUI after the simulation is running.
+
+### Gap Pose GUI / Ground Truth
 
 ```bash
 cd /home/user/concert_ws/src/acea_concert
@@ -56,9 +86,6 @@ This publishes the current gap pose with respect to `base_link`:
 
 ```text
 /gap/pose_robot
-/gap/x_axis_robot
-/gap/y_axis_robot
-/gap/z_axis_robot
 ```
 
 This node is ground truth for simulation. In the real setup, it should be replaced by perception.
@@ -68,6 +95,20 @@ This node is ground truth for simulation. In the real setup, it should be replac
 ```bash
 cd /home/user/concert_ws/src/acea_concert
 python3 src/gravity_comp_node.py
+```
+
+### Home Weld Joints To Optimized Start
+
+```bash
+cd /home/user/concert_ws/src/acea_concert
+python3 src/home_to_weld_start.py
+```
+
+### Drive Base To Optimized Weld Pose
+
+```bash
+cd /home/user/concert_ws/src/acea_concert
+python3 src/drive_base_to_weld_pose.py
 ```
 
 ### Welding Controller
@@ -83,8 +124,10 @@ The controller uses:
 optimized posture trajectory from the MAT file
 desired weld position in the gap frame
 desired weld orientation in the gap frame
-measured gap pose from ground truth/perception
+measured /gap/pose_robot from ground truth/perception
 ```
+
+`/gap/pose_robot` is the only online gap input required by the controller. It is a `PoseStamped` in `base_link`: the position gives `base_p_gap`, and the quaternion gives `base_R_gap`.
 
 At runtime it relocates the optimized weld trajectory onto the current measured gap:
 
@@ -108,8 +151,8 @@ flowchart TD
     end
 
     subgraph online["online measurements"]
-        perception["ground truth now<br/>perception later"]
-        gappose["base_p_gap<br/>base_R_gap<br/>current gap pose"]
+        perception["/gap/pose_robot<br/>ground truth now<br/>perception later"]
+        gappose["base_p_gap<br/>base_R_gap<br/>derived from pose"]
         feedback["robot feedback<br/>q_meas<br/>base_p_ee_meas<br/>base_R_ee_meas"]
         perception --> gappose
     end
@@ -152,8 +195,9 @@ gap_R_ee_des(t)       desired tool orientation expressed in the gap frame
 From ground truth now, and from perception later:
 
 ```text
-base_p_gap            gap origin expressed in base_link
-base_R_gap            gap orientation expressed in base_link
+/gap/pose_robot       PoseStamped in base_link
+base_p_gap            gap origin from /gap/pose_robot.position
+base_R_gap            gap orientation from /gap/pose_robot.orientation
 ```
 
 From robot feedback:
@@ -170,8 +214,8 @@ At each controller tick:
 
 1. Read `q_des(t)` and send it to the CartesIO postural task.
 2. Read the desired weld position and orientation in the gap frame.
-3. Read the current measured gap pose in `base_link`.
-4. Convert the desired weld target from gap frame to `base_link`.
+3. Read the current measured `/gap/pose_robot` in `base_link`.
+4. Derive `base_p_gap` and `base_R_gap`, then convert the desired weld target from gap frame to `base_link`.
 5. Compare the measured EE position with the desired weld target along:
    - the gap normal direction, across the pipes
    - the gap tangent direction, along the weld
@@ -189,9 +233,12 @@ base_R_ee_des = base_R_gap * gap_R_ee_des
 ## Main Files
 
 - `src/weld_opt.py`: offline trajectory optimization and MAT file generation.
+- `src/replayer.py`: replay and RViz visualization of the optimized trajectory.
 - `launch/weld_sim.launch.py`: simulation launch file.
 - `src/gap_pose_publisher.py`: simulation ground-truth gap pose publisher.
 - `src/gravity_comp_node.py`: gravity compensation node.
+- `src/home_to_weld_start.py`: moves weld joints to trajectory node 0.
+- `src/drive_base_to_weld_pose.py`: drives the mobile base to the optimized relative gap pose.
 - `src/controller.py`: online welding controller.
 - `src/controller_ros.py`: ROS interface for the controller.
 - `src/utils/`: controller geometry, trajectory, and diagnostic helpers.

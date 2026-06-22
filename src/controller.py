@@ -6,9 +6,10 @@ Architecture:
   - A standalone CartesianInterface (OpenSot) runs the IK locally each tick.
   - URDF/SRDF are read from robot_description_publisher ROS parameters.
 
-Usage (simulation must already be running):
-    ros2 launch acea_concert weld_sim.launch.py   # terminal 1
-    python3 controller.py                          # terminal 2
+Usage (simulation must already be running and homing already completed):
+    ros2 launch acea_concert weld_sim.launch.py
+    ros2 run acea_concert home_to_weld_start.py
+    python3 controller.py
 """
 
 from pathlib import Path
@@ -42,9 +43,6 @@ WELD_JOINTS = (
     'J1_F', 'J2_F', 'J3_F', 'J4_F', 'J5_F', 'J6_F',
 )
 
-# ── Homing ───────────────────────────────────────────────────────────────────
-HOMING_DURATION = 5.0  # [s]  time to move from current pose to trajectory node-0
-
 # ── Trajectory (world X back-and-forth) ──────────────────────────────────────
 TRJ_HALF    = 0.40     # [m]   half-stroke
 TRJ_PERIOD  = 10.0     # [s]   period of one full cycle
@@ -75,10 +73,6 @@ MAT_FILE = Path('/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.m
 # ── Load weld_opt trajectory from mat file ────────────────────────────────────
 print(f"[controller] Loading trajectory from {MAT_FILE} …")
 mat_data = loadmat(str(MAT_FILE))
-
-init_pos_robot = mat_data['initial_robot_pose'][0]
-GAP_Y = - init_pos_robot[1]
-print(f"[controller] Gap Y (from pipe center): {GAP_Y:.4f} m")
 
 # q: (nq x N_nodes) — full model joint vector (floating base + actuated)
 # joint_names: casadi_kin_dyn list
@@ -158,63 +152,8 @@ model_shadow = xbi.ModelInterface2(urdf, srdf, 'pin')
 model.setJointPosition(robot_q_map)
 model.update()
 
-# ── Homing phase: move robot to trajectory node-0 ────────────────────────────
-# q_home_act: actuated joint targets from node-0 of the mat trajectory
-q_home_act = q_act[:, 0]
-q_home_map = {name: float(q_home_act[i]) for i, name in enumerate(jnames)}
-
-# Current actuated joint positions (from robot sense)
-q_cur_map = robot.qToMap(robot.getPositionReferenceFeedback())
-
-# Only home the weld joints; wheel/steering joints stay at feedback.
-home_joints = {k: v for k, v in q_home_map.items() if k in commanded_jnames}
-print(f"[controller] Homing weld joints to node-0 over {HOMING_DURATION}s …")
-
-homing_steps = int(HOMING_DURATION / DT)
-interp_map = dict(home_joints)
-for step in range(homing_steps):
-    alpha = (step + 1) / homing_steps          # 0 -> 1 linear ramp
-    interp_map = {
-        k: (1.0 - alpha) * q_cur_map[k] + alpha * home_joints[k]
-        for k in home_joints
-    }
-    command_map = dict(q_cur_map)
-    command_map.update(interp_map)
-    robot.setPositionReference(robot.mapToQ(command_map))
-    robot.move()
-    sleep(DT)
-
-robot.sense()
-
-motor_pos = robot.getJointPosition() # no getMotorPosition()
-motor_map = robot.qToMap(motor_pos)
-for name, j in motor_map.items():
-    print(f"{name}: {j}")
-# Joint error (for actuated joints in home_joints)
-joint_err = {k: interp_map[k] - motor_map[k] for k in home_joints}
-
-# Pretty print joint errors
-print("[JOINT ERROR]")
-for joint, err in joint_err.items():
-    print(f"    {joint:20s}: {err:+.6f}")
-
-# EE error
-desired_home_map = dict(motor_map)
-desired_home_map.update(interp_map)
-model.setJointPosition(desired_home_map)
-model.update()
-ee_pose_des = model.getPose('ee_F', 'world')
-
-model.setJointPosition(motor_map)
-model.update()
-ee_pose_cur = model.getPose('ee_F', 'world')
-
-ee_err = ee_pose_des.translation - ee_pose_cur.translation
-print(f"[EE ERROR] err={ee_err}, |err|={np.linalg.norm(ee_err)}")
-
-print("[controller] Homing complete.")
-
-# Re-sync model to the post-homing robot state for building the CartesianInterface
+# The weld joints should already be at trajectory node-0. Re-sync from the
+# current robot state before building CartesianInterface.
 robot_q_map = robot.qToMap(robot.getPositionReferenceFeedback())
 model.setJointPosition(robot_q_map)
 model.update()

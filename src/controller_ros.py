@@ -2,9 +2,10 @@ import threading
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import PoseStamped, Vector3Stamped
+from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Header
+from scipy.spatial.transform import Rotation as R
 
 from utils.diagnostic import DiagnosticPlotter
 from rcl_interfaces.srv import GetParameters
@@ -74,15 +75,8 @@ class ControllerRosInterface:
         self._gap_y_axis_base: np.ndarray | None = None
         self._gap_z_axis_base: np.ndarray | None = None
 
-        # FOR THE TIME BEING, GROUND TRUTH
         self.node.create_subscription(
             PoseStamped, '/gap/pose_robot', self._on_gap_pose_robot, 10)
-        self.node.create_subscription(
-            Vector3Stamped, '/gap/x_axis_robot', self._on_gap_x_axis_robot, 10)
-        self.node.create_subscription(
-            Vector3Stamped, '/gap/y_axis_robot', self._on_gap_y_axis_robot, 10)
-        self.node.create_subscription(
-            Vector3Stamped, '/gap/z_axis_robot', self._on_gap_z_axis_robot, 10)
 
         self._ros_thread = threading.Thread(
             target=rclpy.spin, args=(self.node,), daemon=True)
@@ -158,17 +152,18 @@ class ControllerRosInterface:
             msg.pose.position.z,
         ], dtype=float)
 
-    def _on_gap_x_axis_robot(self, msg: Vector3Stamped):
-        self._gap_x_axis_base = self._normalized_axis(msg)
+        quat = msg.pose.orientation
+        q = np.array([quat.x, quat.y, quat.z, quat.w], dtype=float)
+        norm = np.linalg.norm(q)
+        if norm <= 1e-9:
+            return
 
-    def _on_gap_y_axis_robot(self, msg: Vector3Stamped):
-        self._gap_y_axis_base = self._normalized_axis(msg)
+        base_R_gap = R.from_quat(q / norm).as_matrix()
+        self._gap_x_axis_base = self._unit_axis(base_R_gap[:, 0])
+        self._gap_y_axis_base = self._unit_axis(base_R_gap[:, 1])
+        self._gap_z_axis_base = self._unit_axis(base_R_gap[:, 2])
 
-    def _on_gap_z_axis_robot(self, msg: Vector3Stamped):
-        self._gap_z_axis_base = self._normalized_axis(msg)
-
-    def _normalized_axis(self, msg: Vector3Stamped) -> np.ndarray | None:
-        axis = np.array([msg.vector.x, msg.vector.y, msg.vector.z], dtype=float)
+    def _unit_axis(self, axis: np.ndarray) -> np.ndarray | None:
         norm = np.linalg.norm(axis)
         if norm > 1e-9:
             return axis / norm

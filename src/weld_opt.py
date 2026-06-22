@@ -76,14 +76,19 @@ length_pipe = 5.0
 pipe_gap = 0.01
 pos_center_pipe = [1.5, 0.0, 1.5]
 orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
-radius_pipe = 0.5
+radius_pipe = 0.1
+
 # first half
 angle_weld_start = 1/2 *np.pi
-angle_weld_end = 4/5 * np.pi # 3/2 * np.pi #2 * np.pi
-
+angle_weld_end = 1 * np.pi # quarter circle
+# angle_weld_end = 3/2 * np.pi 
+# angle_weld_end = 4/5 * np.pi # only a bit of the pipe 
+# angle_weld_end = 2 * np.pi
 # second half
-# angle_weld_start = np.pi
-# angle_weld_end = 3/2 * np.pi
+angle_weld_start = np.pi
+angle_weld_end = 3/2 * np.pi
+
+weld_upside_down = True
 
 margin_x = 0. # Some margin around the pipe
 bound_initial_pos_x_low = -0.5 # 0 is good!
@@ -105,7 +110,7 @@ circular_pos, circular_ori = generate_circular_trajectory(
     radius=radius_pipe,
     angle_start=angle_weld_start,
     angle_end=angle_weld_end,
-    upside_down=False
+    upside_down=weld_upside_down
 )
 
 # =================================================================================
@@ -371,6 +376,8 @@ info_dict = dict(
 
 ms.store({**solution, **info_dict})
 print(f"[weld_opt] Saved optimization result to: {mat_file_path}")
+
+print(f"[INFO] Final initial robot pose: {solution['q'][:, 0]}")
 
 
 q_forward = solution['q']

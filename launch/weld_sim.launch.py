@@ -10,6 +10,7 @@ Usage:
 """
 
 import os
+import math
 from pathlib import Path
 import sys
 
@@ -17,7 +18,7 @@ import scipy
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, SetEnvironmentVariable, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -83,6 +84,75 @@ PIPE_SDF_LEFT  = PIPE_SDF_TEMPLATE.format(name="weld_pipe_left")
 PIPE_SDF_RIGHT = PIPE_SDF_TEMPLATE.format(name="weld_pipe_right")
 
 
+def _float_launch_config(context, name):
+    return float(LaunchConfiguration(name).perform(context))
+
+
+def _spawn_pipe_actions(context, *args, **kwargs):
+    nominal_pipe_distance = _float_launch_config(context, "nominal_pipe_distance")
+    nominal_pipe_lateral = _float_launch_config(context, "nominal_pipe_lateral")
+    pipe_y_axis_yaw = _float_launch_config(context, "pipe_y_axis_yaw")
+
+    # The sim robot is spawned at world XY = 0. Express the optimized pipe
+    # position in this nominal robot-start frame.
+    nominal_robot_x = PIPE_X - nominal_pipe_distance
+    nominal_robot_y = PIPE_Y - nominal_pipe_lateral
+    pipe_spawn_x = PIPE_X - nominal_robot_x
+    pipe_spawn_y = PIPE_Y - nominal_robot_y
+    pipe_y_axis = (
+        -math.sin(pipe_y_axis_yaw),
+        math.cos(pipe_y_axis_yaw),
+    )
+    pipe_offset_x = _pipe_y * pipe_y_axis[0]
+    pipe_offset_y = _pipe_y * pipe_y_axis[1]
+
+    return [
+        # Spawn two pipe halves with a small gap. With the default nominal frame
+        # the robot starts centered 2 m from the pipe. pipe_y_axis_yaw rotates
+        # the whole pipe/gap frame around vertical Z.
+        TimerAction(
+            period=2.0,
+            actions=[
+                Node(
+                    package="ros_gz_sim",
+                    executable="create",
+                    name="spawn_weld_pipe_left",
+                    arguments=[
+                        "-string", PIPE_SDF_LEFT,
+                        "-x", f"{pipe_spawn_x + pipe_offset_x:.6f}",
+                        "-y", f"{pipe_spawn_y + pipe_offset_y:.6f}",
+                        "-z", str(PIPE_Z),
+                        "-R", "1.5708",
+                        "-P", "0.0",
+                        "-Y", f"{pipe_y_axis_yaw:.6f}",
+                    ],
+                    output="screen",
+                ),
+            ],
+        ),
+        TimerAction(
+            period=2.0,
+            actions=[
+                Node(
+                    package="ros_gz_sim",
+                    executable="create",
+                    name="spawn_weld_pipe_right",
+                    arguments=[
+                        "-string", PIPE_SDF_RIGHT,
+                        "-x", f"{pipe_spawn_x - pipe_offset_x:.6f}",
+                        "-y", f"{pipe_spawn_y - pipe_offset_y:.6f}",
+                        "-z", str(PIPE_Z),
+                        "-R", "1.5708",
+                        "-P", "0.0",
+                        "-Y", f"{pipe_y_axis_yaw:.6f}",
+                    ],
+                    output="screen",
+                ),
+            ],
+        ),
+    ]
+
+
 def generate_launch_description():
 
     # Ensure Gazebo can find the meshes
@@ -99,6 +169,12 @@ def generate_launch_description():
         DeclareLaunchArgument("rviz",      default_value="false", description="Launch RViz"),
         DeclareLaunchArgument("realsense", default_value="false", description="Include RealSense"),
         DeclareLaunchArgument("velodyne",  default_value="false", description="Include Velodyne"),
+        DeclareLaunchArgument("nominal_pipe_distance", default_value="2.0",
+                              description="Pipe center X in the robot nominal start frame [m]"),
+        DeclareLaunchArgument("nominal_pipe_lateral", default_value="0.0",
+                              description="Pipe center Y in the robot nominal start frame [m]"),
+        DeclareLaunchArgument("pipe_y_axis_yaw", default_value="0.0",
+                              description="Yaw of the pipe/gap Y axis from nominal +Y around world Z [rad]"),
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
@@ -115,45 +191,5 @@ def generate_launch_description():
             }.items(),
         ),
 
-        # Spawn two pipe halves with a small gap
-        TimerAction(
-            period=2.0,
-            actions=[
-                Node(
-                    package="ros_gz_sim",
-                    executable="create",
-                    name="spawn_weld_pipe_left",
-                    arguments=[
-                        "-string", PIPE_SDF_LEFT,
-                        "-x", str(PIPE_X - init_pos_robot[0]),
-                        "-y", str(PIPE_Y + _pipe_y - init_pos_robot[1]),
-                        "-z", str(PIPE_Z),
-                        "-R", "1.5708",
-                        "-P", "0.0",
-                        "-Y", "0.0",
-                    ],
-                    output="screen",
-                ),
-            ],
-        ),
-        TimerAction(
-            period=2.0,
-            actions=[
-                Node(
-                    package="ros_gz_sim",
-                    executable="create",
-                    name="spawn_weld_pipe_right",
-                    arguments=[
-                        "-string", PIPE_SDF_RIGHT,
-                        "-x", str(PIPE_X - init_pos_robot[0]),
-                        "-y", str(PIPE_Y - _pipe_y - init_pos_robot[1]),
-                        "-z", str(PIPE_Z),
-                        "-R", "1.5708",
-                        "-P", "0.0",
-                        "-Y", "0.0",
-                    ],
-                    output="screen",
-                ),
-            ],
-        ),
+        OpaqueFunction(function=_spawn_pipe_actions),
     ])

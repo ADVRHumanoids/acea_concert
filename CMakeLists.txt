@@ -7,11 +7,14 @@ find_package(ament_cmake REQUIRED)
 install(PROGRAMS
   scripts/apply_gz_wrench.py
   scripts/omnisteering_sine_command.py
+  src/drive_base_to_weld_pose.py
+  src/home_to_weld_start.py
   src/weld_opt.py
   src/replayer.py
   src/controller.py
   src/circular_trajectory.py
   src/collision_checker.py
+  src/gap_pose_publisher.py
   src/plot_weld_result.py
   DESTINATION lib/${PROJECT_NAME}
 )

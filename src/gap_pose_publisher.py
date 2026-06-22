@@ -5,15 +5,10 @@ gap_pose_publisher.py
 Reads Gazebo entity poses directly from the gz transport layer via a
 background subprocess (gz topic -e) and publishes:
 
-  /gap/pose_world  (PoseStamped, frame: world)      – gap centre in world
-  /gap/pose_robot  (PoseStamped, frame: base_link)  – gap in robot base frame
-  /gap/x_axis_world (Vector3Stamped, frame: world)  – unit gap x direction
-  /gap/y_axis_world (Vector3Stamped, frame: world)  – unit y-gap direction
-  /gap/z_axis_world (Vector3Stamped, frame: world)  – unit gap z direction
-  /gap/x_axis_robot (Vector3Stamped, frame: base_link) – direction in base
-  /gap/y_axis_robot (Vector3Stamped, frame: base_link) – direction in base
-  /gap/z_axis_robot (Vector3Stamped, frame: base_link) – direction in base
-  /robot/base_pose (PoseStamped, frame: world)      – robot base in world
+  /gap/pose_robot  (PoseStamped, frame: base_link)
+
+The pose contains the gap centre position and the full gap-frame orientation
+with x = weld tangent, y = gap normal, z = right-handed vertical direction.
 
 No ros_gz_bridge configuration needed — works out of the box.
 
@@ -27,7 +22,8 @@ import threading
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped, Vector3Stamped
+from geometry_msgs.msg import PoseStamped
+from scipy.spatial.transform import Rotation as R
 
 # ── Gazebo model names (from gz topic -e /world/default/pose/info) ─────────
 ROBOT_MODEL     = 'ModularBot'        # capital M and B — verified from Gazebo
@@ -36,7 +32,6 @@ GAP_MODEL_LEFT  = 'weld_pipe_left'
 GAP_MODEL_RIGHT = 'weld_pipe_right'
 
 GZ_POSE_TOPIC = '/world/default/pose/info'
-WORLD_FRAME   = 'world'
 BASE_FRAME    = 'base_link'
 
 
@@ -120,16 +115,6 @@ def _pose_stamped(frame_id: str, xyz: np.ndarray,
     return msg
 
 
-def _vector3_stamped(frame_id: str, vector: np.ndarray, stamp) -> Vector3Stamped:
-    msg = Vector3Stamped()
-    msg.header.frame_id = frame_id
-    msg.header.stamp = stamp
-    msg.vector.x = float(vector[0])
-    msg.vector.y = float(vector[1])
-    msg.vector.z = float(vector[2])
-    return msg
-
-
 # ── Protobuf text parser ───────────────────────────────────────────────────────
 
 def _parse_pose_v(text: str) -> dict[str, tuple[np.ndarray, np.ndarray]]:
@@ -202,15 +187,8 @@ class GapPosePublisher(Node):
     def __init__(self):
         super().__init__('gap_pose_publisher')
 
-        self._pub_gap_world  = self.create_publisher(PoseStamped, '/gap/pose_world',  10)
-        self._pub_gap_robot  = self.create_publisher(PoseStamped, '/gap/pose_robot',  10)
-        self._pub_gap_x_world = self.create_publisher(Vector3Stamped, '/gap/x_axis_world', 10)
-        self._pub_gap_y_world = self.create_publisher(Vector3Stamped, '/gap/y_axis_world', 10)
-        self._pub_gap_z_world = self.create_publisher(Vector3Stamped, '/gap/z_axis_world', 10)
-        self._pub_gap_x_robot = self.create_publisher(Vector3Stamped, '/gap/x_axis_robot', 10)
-        self._pub_gap_y_robot = self.create_publisher(Vector3Stamped, '/gap/y_axis_robot', 10)
-        self._pub_gap_z_robot = self.create_publisher(Vector3Stamped, '/gap/z_axis_robot', 10)
-        self._pub_robot_base = self.create_publisher(PoseStamped, '/robot/base_pose', 10)
+        self._pub_gap_robot = self.create_publisher(
+            PoseStamped, '/gap/pose_robot', 10)
 
         # Latest parsed poses {name: (xyz, quat)}
         self._poses: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -293,28 +271,14 @@ class GapPosePublisher(Node):
         gap_z_robot = _rotate_world_vector_to_frame(robot_quat, gap_z_world)
 
         # ── Gap pose in robot base_link frame ─────────────────────────────────
-        # Position: rotate + translate
+        # Position: rotate + translate. Orientation: columns are the gap-frame
+        # axes expressed in the target frame.
         gap_in_robot = _transform_world_to_frame(robot_xyz, robot_quat, gap_world)
-        identity_quat = np.array([0.0, 0.0, 0.0, 1.0])
+        base_R_gap = np.column_stack([gap_x_robot, gap_y_robot, gap_z_robot])
+        gap_quat_robot = R.from_matrix(base_R_gap).as_quat()
 
-        self._pub_gap_world.publish(
-            _pose_stamped(WORLD_FRAME, gap_world,    identity_quat,  stamp))
         self._pub_gap_robot.publish(
-            _pose_stamped(BASE_FRAME,  gap_in_robot, identity_quat,  stamp))
-        self._pub_gap_x_world.publish(
-            _vector3_stamped(WORLD_FRAME, gap_x_world, stamp))
-        self._pub_gap_y_world.publish(
-            _vector3_stamped(WORLD_FRAME, gap_y_world, stamp))
-        self._pub_gap_z_world.publish(
-            _vector3_stamped(WORLD_FRAME, gap_z_world, stamp))
-        self._pub_gap_x_robot.publish(
-            _vector3_stamped(BASE_FRAME, gap_x_robot, stamp))
-        self._pub_gap_y_robot.publish(
-            _vector3_stamped(BASE_FRAME, gap_y_robot, stamp))
-        self._pub_gap_z_robot.publish(
-            _vector3_stamped(BASE_FRAME, gap_z_robot, stamp))
-        self._pub_robot_base.publish(
-            _pose_stamped(WORLD_FRAME, robot_xyz,    robot_quat,      stamp))
+            _pose_stamped(BASE_FRAME,  gap_in_robot, gap_quat_robot, stamp))
 
         # Signed yaw offset of the y-gap direction from base_link +Y.
         gap_yaw_robot = float(np.arctan2(-gap_y_robot[0], gap_y_robot[1]))
@@ -322,12 +286,7 @@ class GapPosePublisher(Node):
         self.get_logger().info(
             f"gap world y={gap_world[1]:.4f}  |  "
             f"gap robot y={gap_in_robot[1]:.4f}  |  "
-            f"gap_x_robot=[{gap_x_robot[0]:+.3f}, "
-            f"{gap_x_robot[1]:+.3f}, {gap_x_robot[2]:+.3f}]  |  "
-            f"gap_y_robot=[{gap_y_robot[0]:+.3f}, "
-            f"{gap_y_robot[1]:+.3f}, {gap_y_robot[2]:+.3f}]  |  "
-            f"gap_z_robot=[{gap_z_robot[0]:+.3f}, "
-            f"{gap_z_robot[1]:+.3f}, {gap_z_robot[2]:+.3f}]  |  "
+            f"base_R_gap={np.array2string(base_R_gap, precision=3, suppress_small=True)}  |  "
             f"y-gap yaw from base +Y={np.degrees(gap_yaw_robot):.2f}°",
             throttle_duration_sec=1.0,
         )

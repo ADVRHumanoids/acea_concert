@@ -26,6 +26,15 @@ ee_F:
 Postural:
   type: Postural
   lambda: 1.0
+  disabled_joints:
+    - J1_A
+    - J_wheel_A
+    - J1_B
+    - J_wheel_B
+    - J1_C
+    - J_wheel_C
+    - J1_D
+    - J_wheel_D
 
 joint_limits:
   type: JointLimits

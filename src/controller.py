@@ -35,6 +35,13 @@ from cartesian_interface import pyci
 TASK_NAME   = 'ee_F'   # CartesIO task name for the welding end-effector
 DT          = 0.01     # [s]   controller dt (100 Hz)
 
+# The MAT trajectory contains the whole robot, but this controller should only
+# command the welding axes. A-D wheel modules are owned by omnisteering.
+WELD_JOINTS = (
+    'J1_E', 'J2_E',
+    'J1_F', 'J2_F', 'J3_F', 'J4_F', 'J5_F', 'J6_F',
+)
+
 # ── Homing ───────────────────────────────────────────────────────────────────
 HOMING_DURATION = 5.0  # [s]  time to move from current pose to trajectory node-0
 
@@ -97,8 +104,11 @@ weld_quat_traj_gap = np.asarray(
 VIRTUAL = {'universe', 'reference'}
 jnames  = [n for n in all_jnames if n not in VIRTUAL]
 
+weld_jnames = [name for name in jnames if name in WELD_JOINTS]
+
 print(f"[controller] Trajectory: {N} nodes, dt={trj_dt:.4f}s, duration={trj_dur:.2f}s")
 print(f"[controller] Actuated joint names ({len(jnames)}): {jnames}")
+print(f"[controller] Weld joints from trajectory ({len(weld_jnames)}): {weld_jnames}")
 
 postural_trajectory = CyclicPosturalTrajectory(q_act, jnames, trj_dt)
 weld_gap_trajectory = CyclicVectorTrajectory(weld_pos_traj_gap, trj_dt) # desired EE/weld position expressed in the gap frame
@@ -130,6 +140,16 @@ robot_joint_names = set(robot_q_map.keys())
 print(f"[controller] Robot joint names ({len(robot_joint_names)}): {sorted(robot_joint_names)}")
 print(f"[controller] Robot joint positions: {robot_q_map}")
 
+commanded_jnames = [name for name in weld_jnames if name in robot_joint_names]
+if not commanded_jnames:
+    raise RuntimeError("No weld joints are available on RobotInterface2")
+
+robot.setControlMode(xbi.ControlMode.NONE)
+weld_control_mode = {name: xbi.ControlMode.POSITION for name in commanded_jnames}
+if not robot.setControlMode(weld_control_mode):
+    raise RuntimeError(f"Failed to set weld-only control mode: {commanded_jnames}")
+print(f"[controller] Commanding weld joints only: {commanded_jnames}")
+
 # ── Build ModelInterface2 for the standalone solver ───────────────────────────
 model = xbi.ModelInterface2(urdf, srdf, 'pin')
 model_shadow = xbi.ModelInterface2(urdf, srdf, 'pin')
@@ -140,24 +160,27 @@ model.update()
 
 # ── Homing phase: move robot to trajectory node-0 ────────────────────────────
 # q_home_act: actuated joint targets from node-0 of the mat trajectory
-q_home_act = q_act[:, 0]  # (n_actuated,)
-q_home_map  = {name: float(q_home_act[i]) for i, name in enumerate(jnames)}
+q_home_act = q_act[:, 0]
+q_home_map = {name: float(q_home_act[i]) for i, name in enumerate(jnames)}
 
 # Current actuated joint positions (from robot sense)
 q_cur_map = robot.qToMap(robot.getPositionReferenceFeedback())
 
-# Only home the joints that exist both in the trajectory and on the robot
-home_joints = {k: v for k, v in q_home_map.items() if k in q_cur_map}
-print(f"[controller] Homing to node-0 over {HOMING_DURATION}s …")
+# Only home the weld joints; wheel/steering joints stay at feedback.
+home_joints = {k: v for k, v in q_home_map.items() if k in commanded_jnames}
+print(f"[controller] Homing weld joints to node-0 over {HOMING_DURATION}s …")
 
 homing_steps = int(HOMING_DURATION / DT)
+interp_map = dict(home_joints)
 for step in range(homing_steps):
-    alpha = (step + 1) / homing_steps          # 0 → 1 linear ramp
+    alpha = (step + 1) / homing_steps          # 0 -> 1 linear ramp
     interp_map = {
         k: (1.0 - alpha) * q_cur_map[k] + alpha * home_joints[k]
         for k in home_joints
     }
-    robot.setPositionReference(robot.mapToQ(interp_map))
+    command_map = dict(q_cur_map)
+    command_map.update(interp_map)
+    robot.setPositionReference(robot.mapToQ(command_map))
     robot.move()
     sleep(DT)
 
@@ -176,7 +199,9 @@ for joint, err in joint_err.items():
     print(f"    {joint:20s}: {err:+.6f}")
 
 # EE error
-model.setJointPosition(interp_map)
+desired_home_map = dict(motor_map)
+desired_home_map.update(interp_map)
+model.setJointPosition(desired_home_map)
 model.update()
 ee_pose_des = model.getPose('ee_F', 'world')
 
@@ -231,12 +256,20 @@ while True:
     t_traj = t / TRAJ_SLOWDOWN
 
     # ── Update postural reference from mat trajectory (slowdown applied) ─
-    postural_map = postural_trajectory.postural_map(t_traj)
+    postural_map = {
+        k: v
+        for k, v in postural_trajectory.postural_map(t_traj).items()
+        if k in commanded_jnames
+    }
     postural_task.setReferencePosture(postural_map)
 
     # ── Sense actual robot state for feedback ──────────────────────────────
     robot.sense()
     q_map_robot = robot.qToMap(robot.getJointPosition())
+
+    # Keep wheel/steering joints at the measured state before each IK step.
+    model.setJointPosition(q_map_robot)
+    model.update()
 
     # ── model shadow updated with the robot state for ee_cur ────────────────
     model_shadow.setJointPosition(q_map_robot)
@@ -270,12 +303,10 @@ while True:
 
     # Gap-frame setpoints: normal is across the pipes, tangent is along the
     # planned weld direction.
-    gap_normal_coord = float(
-        np.dot(weld_target_pos_base, gap_y_axis_base))
+    gap_normal_coord = float(np.dot(weld_target_pos_base, gap_y_axis_base))
     ee_normal_coord = float(np.dot(ee_pos_cur, gap_y_axis_base))
 
-    gap_tangent_target_coord = float(
-        np.dot(weld_target_pos_base, gap_x_axis_base))
+    gap_tangent_target_coord = float(np.dot(weld_target_pos_base, gap_x_axis_base))
     ee_tangent_coord = float(np.dot(ee_pos_cur, gap_x_axis_base))
 
     ## add a sinusoidal offset in world Y to the EE reference, to simulate a gap correction
@@ -317,6 +348,7 @@ while True:
     commanded_normal_coord = ee_normal_coord + vy_cmd * DT
     postural_normal_coord = float(np.dot(ee_pos_des, gap_y_axis_base))
     normal_delta = commanded_normal_coord - postural_normal_coord
+    
     commanded_tangent_coord = ee_tangent_coord + vx_cmd * DT
     postural_tangent_coord = float(np.dot(ee_pos_des, gap_x_axis_base))
     tangent_delta = commanded_tangent_coord - postural_tangent_coord
@@ -345,7 +377,14 @@ while True:
     model.update()
 
     # ── Send to robot ─────────────────────────────────────────────────────
-    robot.setPositionReference(model.getJointPosition())
+    solver_map = model.qToMap(model.getJointPosition())
+    command_map = dict(q_map_robot)
+    command_map.update({
+        name: solver_map[name]
+        for name in commanded_jnames
+        if name in solver_map
+    })
+    robot.setPositionReference(robot.mapToQ(command_map))
     robot.move()
 
     # ── IK output EE pose ────────────────────────────────────────────────

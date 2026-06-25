@@ -2233,7 +2233,7 @@ class AceaPipeJunctionNode(Node):
         return 1e-9 * float(self.get_clock().now().nanoseconds)
 
     def _try_process(self) -> None:
-        if not self.rgb_queue or not self.depth_queue or not self.info_queue:
+        if not self.rgb_queue or not self.depth_queue:
             return
 
         rgb_time, rgb_msg = self.rgb_queue[-1]
@@ -2297,6 +2297,8 @@ class AceaPipeJunctionNode(Node):
         valid_pairs = [(stamp, msg) for stamp, msg in self.info_queue if self._camera_info_valid(msg)]
         if not valid_pairs and bool(self.params["allow_nominal_intrinsics_fallback"]):
             valid_pairs = list(self.info_queue)
+        if not valid_pairs and bool(self.params["allow_nominal_intrinsics_fallback"]):
+            return target, CameraInfo()
         if not valid_pairs:
             return None
         if bool(self.params["allow_stale_camera_info"]):

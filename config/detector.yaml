@@ -5,9 +5,12 @@
 # in-code defaults (_declare_params in acea_pipe_junction_node.py).
 /**:
   ros__parameters:
-    rgb_topic: /camera/rgb
-    depth_topic: /camera/depth
-    camera_info_topic: /camera/camera_info
+    # Defaults match weld_sim.launch.py + concert_gazebo D435i front bridge.
+    # Override these at launch time for a real wrist camera, e.g.
+    # rgb_topic:=/camera_front/color/image_raw depth_topic:=/camera_front/aligned_depth_to_color/image_raw
+    rgb_topic: /D435i_camera_front/color/image_raw
+    depth_topic: /D435i_camera_front/depth_image
+    camera_info_topic: /D435i_camera_front/camera_info
     detection_topic: /acea/pipe_junction/detection
 
     sync_slop_s: 0.3

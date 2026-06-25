@@ -22,6 +22,31 @@ import numpy as np
 import subprocess
 
 
+def env_flag(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def env_float(name, default):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return float(value)
+
+
+WELD_OPT_BATCH = env_flag('WELD_OPT_BATCH')
+SKIP_RVIZ_SCENE = WELD_OPT_BATCH or env_flag('WELD_OPT_SKIP_RVIZ')
+SKIP_REPLAY = WELD_OPT_BATCH or env_flag('WELD_OPT_SKIP_REPLAY')
+MAX_RANDOM_INITIAL_POSE_ATTEMPTS = int(
+    os.environ.get('WELD_OPT_MAX_ATTEMPTS', '0'))
+
+seed_env = os.environ.get('WELD_OPT_SEED')
+if seed_env is not None:
+    np.random.seed(int(seed_env))
+
+
 '''
 Initialize Horizon problem
 '''
@@ -57,10 +82,13 @@ with open('/tmp/concert_weld.srdf', 'r') as f:
 
 # ========================================================
 
-# Launch robot_state_publisher in background with the URDF
-rsp_process = subprocess.Popen(
-    ["ros2", "run", "robot_state_publisher", "robot_state_publisher", "--ros-args", "-p", f"robot_description:={urdf}"],
-)
+# Launch robot_state_publisher in background with the URDF when something will
+# publish or replay a ROS visualization.
+rsp_process = None
+if not (SKIP_RVIZ_SCENE and SKIP_REPLAY):
+    rsp_process = subprocess.Popen(
+        ["ros2", "run", "robot_state_publisher", "robot_state_publisher", "--ros-args", "-p", f"robot_description:={urdf}"],
+    )
 
 # ========================================================
 
@@ -76,13 +104,14 @@ length_pipe = 5.0
 pipe_gap = 0.01
 pos_center_pipe = [1.5, 0.0, 1.5]
 orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
-OPTIMIZE_PIPE_HEIGHT = False
+
+OPTIMIZE_PIPE_HEIGHT = True
 margin_around_pipe_height = 1.0 # how much the pipe height can be optimized around the nominal height (in both directions)
 pipe_z_bounds = (pos_center_pipe[2] - margin_around_pipe_height, pos_center_pipe[2] + margin_around_pipe_height)
 MINIMIZE_CRITICAL_JOINT_TORQUES = True
 TORQUE_COST_WEIGHT = 1e-1
 CRITICAL_TORQUE_JOINTS = ('J1_E', 'J2_E', 'J1_F', 'J2_F', 'J3_F', 'J4_F', 'J5_F', 'J6_F')
-radius_pipe = 0.1
+radius_pipe = 0.1 # 0.15, 0.25, 0.35 available
 weld_standoff_from_pipe = 0.02  # EE path distance from pipe surface [m]
 weld_trajectory_radius = radius_pipe + weld_standoff_from_pipe
 if weld_trajectory_radius <= 0.0:
@@ -91,19 +120,19 @@ if weld_trajectory_radius <= 0.0:
         'weld_standoff_from_pipe.'
     )
 
-# first half
-angle_weld_start = 1/2 *np.pi
-angle_weld_end = 1 * np.pi # quarter circle
-# angle_weld_end = 3/2 * np.pi 
-# angle_weld_end = 4/5 * np.pi # only a bit of the pipe 
-# angle_weld_end = 2 * np.pi
-# second half
+trajectory_scenario_name = 'manual'
 angle_weld_start = np.pi
-angle_weld_end = 3/2 * np.pi
-
+angle_weld_end = 2 * np.pi
 weld_upside_down = True
 
-margin_x = 0. # Some margin around the pipe w.r.t. the initial robot position
+trajectory_scenario_name = os.environ.get(
+    'WELD_OPT_SCENARIO_NAME', trajectory_scenario_name)
+angle_weld_start = env_float('WELD_OPT_ANGLE_START', angle_weld_start)
+angle_weld_end = env_float('WELD_OPT_ANGLE_END', angle_weld_end)
+weld_upside_down = env_flag(
+    'WELD_OPT_WELD_UPSIDE_DOWN', weld_upside_down)
+
+margin_x = 0. # Some margin around the pipe w.r.t. the initial robot position (the robot cannot start too close to the pipe)
 bound_initial_pos_x_low = -0.5 # 0 is good!
 bound_initial_pos_x_high = pos_center_pipe[0] - radius_pipe - footprint_robot_x/2 - margin_x 
 
@@ -170,6 +199,9 @@ def make_collision_checker(pipe_center):
 from viz.init_scene import InitScene
 
 def launch_rviz_scene(pipe_center, trajectory):
+    if SKIP_RVIZ_SCENE:
+        return
+
     init_scene = InitScene(
         path_ws=PATH_TO_ACEA_CONCERT/"src"/"viz",
         pos_center_pipe=pipe_center,
@@ -291,11 +323,7 @@ for node in range(ns + 1):
         pipe_y + circle_offset[1, node],
         pipe_z + circle_offset[2, node],
     )
-    prb.createConstraint(
-        f'ee_pos_pipe_height_{node}',
-        fk_ee_pos - ee_pos_ref,
-        nodes=node,
-    )
+    prb.createConstraint(f'ee_pos_pipe_height_{node}', fk_ee_pos - ee_pos_ref, nodes=node)
 
 # robot starts with zero velocity and ends with zero velocity
 # ti.model.q[0].setBounds(bound_initial_pos_x_low, bound_initial_pos_x_high) 
@@ -322,6 +350,7 @@ cnsrt_vel_linear_guide.setBounds(0, np.inf)
 
 critical_torque_indices = []
 missing_critical_torque_joints = []
+
 if MINIMIZE_CRITICAL_JOINT_TORQUES:
     critical_torque_indices, missing_critical_torque_joints = torque_indices_for_joints(
         model.kd.joint_names(),
@@ -350,7 +379,7 @@ if MINIMIZE_CRITICAL_JOINT_TORQUES:
         )
         print(
             '[weld_opt] Minimizing quasi-static torques for joints '
-            f'{CRITICAL_TORQUE_JOINTS} with tau rows {critical_torque_indices} '
+            f'{CRITICAL_TORQUE_JOINTS}\n with tau rows {critical_torque_indices}\n'
             f'and weight {TORQUE_COST_WEIGHT}'
         )
     else:
@@ -370,23 +399,35 @@ solution_found = False
 # data = loadmat(matfile)
 # q_init = data.get('q')  # Use the first column of q as the initial guess
 # =================================================================================
-import rclpy
-from viz.rviz_point_marker import PersistentPointSpawner
+point_pub = None
+if not SKIP_RVIZ_SCENE:
+    import rclpy
+    from viz.rviz_point_marker import PersistentPointSpawner
 
-rclpy.init()
+    rclpy.init()
 
-point_pub = PersistentPointSpawner('initial_points', 
-                                   'world', 
-                                   1.0, 0.0, 0.0, 1.0) # color RGBA for the points
+    point_pub = PersistentPointSpawner('initial_points',
+                                       'world',
+                                       1.0, 0.0, 0.0, 1.0) # color RGBA for the points
+
+attempt_count = 0
 
 while is_colliding == True or solution_found == False:
+    attempt_count += 1
+    if (MAX_RANDOM_INITIAL_POSE_ATTEMPTS > 0
+            and attempt_count > MAX_RANDOM_INITIAL_POSE_ATTEMPTS):
+        raise RuntimeError(
+            'No collision-free solution found after '
+            f'{MAX_RANDOM_INITIAL_POSE_ATTEMPTS} attempts.'
+        )
 
     random_pose_x = np.random.uniform(low=bound_initial_pos_x_low, high=bound_initial_pos_x_high, size=1)
     random_pose_y = np.random.uniform(low=bound_initial_pos_y_low, high=bound_initial_pos_y_high, size=1)
 
-    point_pub.add_point(random_pose_x[0], random_pose_y[0], 0.1)
-    # Spin briefly so messages actually get sent
-    rclpy.spin_once(point_pub, timeout_sec=0.0)
+    if point_pub is not None:
+        point_pub.add_point(random_pose_x[0], random_pose_y[0], 0.1)
+        # Spin briefly so messages actually get sent
+        rclpy.spin_once(point_pub, timeout_sec=0.0)
 
     print(f'Publishing point: x={random_pose_x[0]}, y={random_pose_y[0]}')
 
@@ -399,6 +440,9 @@ while is_colliding == True or solution_found == False:
     ti.model.q[1].setBounds(random_pose_y, random_pose_y)  # Update bounds for base Y
 
     solution_found = ti.bootstrap()
+    if not solution_found:
+        is_colliding = True
+        continue
 
     solution = ti.solution
 
@@ -467,9 +511,11 @@ pipe_R_world = np.column_stack([
     pipe_y_axis_world,
     pipe_z_axis_world,
 ])
+
 desired_traj_weld_pos_gap = (
     pipe_R_world.T @ (circular_pos_opt - pipe_center_world.reshape(3, 1))
 )
+
 desired_traj_weld_quat_gap = np.zeros_like(circular_ori)
 for node in range(ns + 1):
     world_R_ee = R.from_quat(circular_ori[:, node]).as_matrix()
@@ -480,14 +526,21 @@ pos_center_pipe_base = R.from_quat(solution['q'][3:7, 0]).inv().apply(
     pipe_center_world - solution['q'][:3, 0])
 
 
-name_file = "weld_concert"
-if not os.path.exists(f"{PATH_TO_ACEA_CONCERT}/mat_files"):
-    os.mkdir(f"{PATH_TO_ACEA_CONCERT}/mat_files")
-mat_file_path = f"{PATH_TO_ACEA_CONCERT}/mat_files/" + name_file + '.mat'
+mat_file_path_env = os.environ.get('WELD_OPT_OUTPUT_PATH')
+if mat_file_path_env:
+    mat_file_path = mat_file_path_env
+    os.makedirs(os.path.dirname(mat_file_path), exist_ok=True)
+else:
+    name_file = os.environ.get('WELD_OPT_OUTPUT_NAME', 'weld_concert')
+    if not os.path.exists(f"{PATH_TO_ACEA_CONCERT}/mat_files"):
+        os.mkdir(f"{PATH_TO_ACEA_CONCERT}/mat_files")
+    mat_file_path = f"{PATH_TO_ACEA_CONCERT}/mat_files/" + name_file + '.mat'
 ms = mat_storer.matStorer(mat_file_path)
 info_dict = dict(
     n_nodes=prb.getNNodes(),
     dt=prb.getDt(),
+    pos_center_pipe_nominal=np.asarray(pos_center_pipe),
+    pipe_z_nominal=float(pos_center_pipe[2]),
     pos_center_pipe=pos_center_pipe_opt,
     pipe_z=pipe_z_opt,
     optimize_pipe_height=OPTIMIZE_PIPE_HEIGHT,
@@ -509,8 +562,11 @@ info_dict = dict(
     initial_zone_size_y=size_y,
     footprint_robot_x=footprint_robot_x,
     footprint_robot_y=footprint_robot_y,
+    trajectory_scenario_name=trajectory_scenario_name,
     angle_weld_start=angle_weld_start,
     angle_weld_end=angle_weld_end,
+    angle_weld_span=angle_weld_end - angle_weld_start,
+    weld_upside_down=weld_upside_down,
     tau=tau,
     joint_names=model.kd.joint_names(),
     desired_traj_weld_pos=circular_pos_opt,
@@ -529,6 +585,11 @@ print(f"[weld_opt] Saved optimization result to: {mat_file_path}")
 
 print(f"[INFO] Final initial robot pose: {solution['q'][:3, 0]}")
 
+if SKIP_REPLAY:
+    if rsp_process is not None:
+        rsp_process.terminate()
+    sys.exit(0)
+
 
 q_forward = solution['q']
 q_backward = np.flip(q_forward, axis=1)
@@ -542,3 +603,6 @@ repl = replay_trajectory.replay_trajectory(dt, model.kd.joint_names(), q_cycle,
                                         future_trajectory_markers={'ee_F': 'world'})
 
 repl.replay()
+
+if rsp_process is not None:
+    rsp_process.terminate()

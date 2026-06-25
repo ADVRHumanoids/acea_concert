@@ -89,14 +89,14 @@ def _float_launch_config(context, name):
 
 
 def _spawn_pipe_actions(context, *args, **kwargs):
-    nominal_pipe_distance = _float_launch_config(context, "nominal_pipe_distance")
-    nominal_pipe_lateral = _float_launch_config(context, "nominal_pipe_lateral")
+    pipe_offset_x = _float_launch_config(context, "pipe_offset_x")
+    pipe_offset_y = _float_launch_config(context, "pipe_offset_y")
     pipe_y_axis_yaw = _float_launch_config(context, "pipe_y_axis_yaw")
 
     # The sim robot is spawned at world XY = 0. Express the optimized pipe
     # position in this nominal robot-start frame.
-    nominal_robot_x = PIPE_X - nominal_pipe_distance
-    nominal_robot_y = PIPE_Y - nominal_pipe_lateral
+    nominal_robot_x = PIPE_X - pipe_offset_x
+    nominal_robot_y = PIPE_Y - pipe_offset_y
     pipe_spawn_x = PIPE_X - nominal_robot_x
     pipe_spawn_y = PIPE_Y - nominal_robot_y
     pipe_y_axis = (
@@ -169,9 +169,9 @@ def generate_launch_description():
         DeclareLaunchArgument("rviz",      default_value="false", description="Launch RViz"),
         DeclareLaunchArgument("realsense", default_value="false", description="Include RealSense"),
         DeclareLaunchArgument("velodyne",  default_value="false", description="Include Velodyne"),
-        DeclareLaunchArgument("nominal_pipe_distance", default_value="2.0",
+        DeclareLaunchArgument("pipe_offset_x", default_value="2.0",
                               description="Pipe center X in the robot nominal start frame [m]"),
-        DeclareLaunchArgument("nominal_pipe_lateral", default_value="0.0",
+        DeclareLaunchArgument("pipe_offset_y", default_value="0.0",
                               description="Pipe center Y in the robot nominal start frame [m]"),
         DeclareLaunchArgument("pipe_y_axis_yaw", default_value="0.0",
                               description="Yaw of the pipe/gap Y axis from nominal +Y around world Z [rad]"),

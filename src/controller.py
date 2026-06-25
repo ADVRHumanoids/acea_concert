@@ -296,6 +296,7 @@ while True:
         + normal_delta * gap_y_axis_base
         + tangent_delta * gap_x_axis_base
     )
+    
     # Apply the optimized tool orientation relative to the current gap frame.
     if has_gap_axes:
         gap_R_ee_des = weld_gap_orientation.matrix(t_traj)

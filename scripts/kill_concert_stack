@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+
+set -u
+
+GRACE_SECONDS=3
+DRY_RUN=0
+FORCE=0
+
+usage() {
+    cat <<'EOF'
+Usage: kill_concert_stack [--dry-run] [--force] [--timeout SECONDS]
+
+Stops common CONCERT/ROS 2 simulation processes:
+  ROS 2 launch/daemon tools, Gazebo/GZ, XBot2, RViz, ros_gz bridges,
+  gap_pose_publisher, gravity_comp_node, controller scripts, and weld helpers.
+
+Options:
+  --dry-run          Print matching processes without killing them.
+  --force            Send SIGKILL immediately instead of trying SIGTERM first.
+  --timeout SECONDS  Seconds to wait after SIGTERM before SIGKILL. Default: 3.
+  -h, --help         Show this help.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        --force)
+            FORCE=1
+            shift
+            ;;
+        --timeout)
+            if [[ $# -lt 2 ]]; then
+                echo "error: --timeout requires a value" >&2
+                exit 2
+            fi
+            GRACE_SECONDS="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "error: unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+declare -A SKIP_PIDS=()
+pid=$$
+while [[ -n "${pid}" && "${pid}" != "0" ]]; do
+    SKIP_PIDS["${pid}"]=1
+    pid="$(ps -o ppid= -p "${pid}" 2>/dev/null | tr -d '[:space:]')"
+done
+
+PATTERNS=(
+    '(^|[ /])ros2([[:space:]]|$)'
+    '(^|[ /])ros2_daemon([[:space:]]|$)'
+    '--ros-args'
+    '(^|[ /])gazebo([[:space:]]|$)'
+    '(^|[ /])gzserver([[:space:]]|$)'
+    '(^|[ /])gzclient([[:space:]]|$)'
+    '(^|[ /])gz[[:space:]]+(sim|server|client)([[:space:]]|$)'
+    '(^|[ /])ign[[:space:]]+gazebo([[:space:]]|$)'
+    '(^|[ /])xbot2-core([[:space:]]|$)'
+    '(^|[ /])xbot2_gui_server([[:space:]]|$)'
+    '(^|[ /])xbot2_gui([[:space:]]|$)'
+    '(^|[ /])xbotcore([[:space:]]|$)'
+    '(^|[ /])rviz2([[:space:]]|$)'
+    '(^|[ /])robot_state_publisher([[:space:]]|$)'
+    '(^|[ /])robot_description_publisher([[:space:]]|$)'
+    '(^|[ /])parameter_bridge([[:space:]]|$)'
+    '(^|[ /])ros_gz_bridge([[:space:]]|$)'
+    '(^|[ /])ros_gz_sim([[:space:]/]|$)'
+    'gap_pose_publisher[.]py'
+    'gap_publisher'
+    'gappublisher'
+    'gravity_comp_node[.]py'
+    'gravity_comp'
+    'controller[.]py'
+    'controller_ros[.]py'
+    'drive_base_to_weld_pose[.]py'
+    'home_to_weld_start[.]py'
+    'weld_opt[.]py'
+    'run_weld_opt_batch[.]py'
+    'replayer[.]py'
+    'rviz_(pipe|rectangle|line)_marker[.]py'
+)
+
+declare -A TARGETS=()
+
+add_matches() {
+    local pattern="$1"
+    local line target_pid command
+
+    while IFS= read -r line; do
+        [[ -z "${line}" ]] && continue
+        target_pid="${line%% *}"
+        command="${line#* }"
+
+        [[ -z "${target_pid}" ]] && continue
+        [[ -n "${SKIP_PIDS[${target_pid}]+x}" ]] && continue
+        [[ "${command}" == pgrep\ -af\ --* ]] && continue
+        [[ -n "${TARGETS[${target_pid}]+x}" ]] && continue
+
+        TARGETS["${target_pid}"]="${command}"
+    done < <(pgrep -af -- "${pattern}" 2>/dev/null || true)
+}
+
+for pattern in "${PATTERNS[@]}"; do
+    add_matches "${pattern}"
+done
+
+if [[ ${#TARGETS[@]} -eq 0 ]]; then
+    echo "No matching CONCERT/ROS 2/Gazebo/XBot processes found."
+    exit 0
+fi
+
+echo "Matched ${#TARGETS[@]} process(es):"
+for target_pid in "${!TARGETS[@]}"; do
+    printf '  %s  %s\n' "${target_pid}" "${TARGETS[${target_pid}]}"
+done | sort -n
+
+if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "Dry run only; no processes were killed."
+    exit 0
+fi
+
+if command -v ros2 >/dev/null 2>&1; then
+    ros2 daemon stop >/dev/null 2>&1 || true
+fi
+
+if [[ "${FORCE}" -eq 1 ]]; then
+    echo "Sending SIGKILL..."
+    kill -KILL "${!TARGETS[@]}" 2>/dev/null || true
+    exit 0
+fi
+
+echo "Sending SIGTERM..."
+kill -TERM "${!TARGETS[@]}" 2>/dev/null || true
+
+sleep "${GRACE_SECONDS}"
+
+remaining=()
+for target_pid in "${!TARGETS[@]}"; do
+    if kill -0 "${target_pid}" 2>/dev/null; then
+        remaining+=("${target_pid}")
+    fi
+done
+
+if [[ ${#remaining[@]} -gt 0 ]]; then
+    echo "Sending SIGKILL to ${#remaining[@]} remaining process(es)..."
+    kill -KILL "${remaining[@]}" 2>/dev/null || true
+else
+    echo "All matched processes stopped cleanly."
+fi

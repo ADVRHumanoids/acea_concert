@@ -26,15 +26,15 @@ SCENARIO_SETS = {
         ("current_bottom_half", np.pi, 2.0 * np.pi, True),
     ],
     "quarters": [
-        ("quarter_right_to_top", 0.0, 0.5 * np.pi, True),
-        ("quarter_top_to_left", 0.5 * np.pi, np.pi, True),
+        ("quarter_right_to_top", 0.0, 0.5 * np.pi, False),
+        ("quarter_top_to_left", 0.5 * np.pi, np.pi, False),
         ("quarter_left_to_bottom", np.pi, 1.5 * np.pi, True),
         ("quarter_bottom_to_right", 1.5 * np.pi, 2.0 * np.pi, True),
     ],
     "halves": [
-        ("half_top", 0.0, np.pi, True),
+        ("half_top", 0.0, np.pi, False),
         ("half_bottom", np.pi, 2.0 * np.pi, True),
-        ("half_start_above", 0.5 * np.pi, 1.5 * np.pi, True),
+        ("half_start_above", 0.5 * np.pi, 1.5 * np.pi, False),
         ("half_start_bottom", 1.5 * np.pi, 2.5 * np.pi, True),
     ],
 }
@@ -145,7 +145,14 @@ def _parse_angle(value: str) -> float:
 
 
 def _parse_bool(value: str) -> bool:
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(
+        "expected true or false for --upside-down"
+    )
 
 
 def _scenario_from_tuple(item: tuple) -> dict:
@@ -158,33 +165,72 @@ def _scenario_from_tuple(item: tuple) -> dict:
     }
 
 
-def _parse_custom_scenario(text: str) -> dict:
-    parts = text.split(":")
-    if len(parts) not in {3, 4}:
-        raise ValueError(
-            "scenario must be name:start:end[:upside_down], "
-            "for example top_quarter:pi/2:pi:true"
-        )
+def _scenario_by_name(name: str) -> dict | None:
+    for scenario_set in SCENARIO_SETS.values():
+        for item in scenario_set:
+            scenario = _scenario_from_tuple(item)
+            if scenario["name"] == name:
+                return scenario
+    return None
+
+
+def _slug_angle(value: str) -> str:
+    slug = "".join(ch if ch.isalnum() else "_" for ch in value.strip())
+    return "_".join(part for part in slug.split("_") if part) or "angle"
+
+
+def _scenario_from_angle_span(parts: list[str]) -> dict:
+    angle_start = _parse_angle(parts[0])
+    angle_end = _parse_angle(parts[1])
     return {
-        "name": parts[0],
-        "angle_start": _parse_angle(parts[1]),
-        "angle_end": _parse_angle(parts[2]),
-        "upside_down": True if len(parts) == 3 else _parse_bool(parts[3]),
+        "name": f"arc_{_slug_angle(parts[0])}_to_{_slug_angle(parts[1])}",
+        "angle_start": angle_start,
+        "angle_end": angle_end,
+        "upside_down": True,
     }
+
+
+def _parse_scenario_arg(text: str) -> dict:
+    text = text.strip()
+    named = _scenario_by_name(text)
+    if named is not None:
+        return named
+
+    parts = [part.strip() for part in text.split(":")]
+    if len(parts) == 2:
+        return _scenario_from_angle_span(parts)
+
+    raise ValueError(
+        "scenario must be either a preset name or start:end; "
+        "for example quarter_right_to_top or 0:pi/2"
+    )
+
+
+def _apply_upside_down_override(scenarios: list[dict],
+                                upside_down: bool | None) -> list[dict]:
+    if upside_down is None:
+        return scenarios
+    return [{**scenario, "upside_down": upside_down} for scenario in scenarios]
 
 
 def _scenario_list(args) -> list[dict]:
     if args.scenario:
-        return [_parse_custom_scenario(item) for item in args.scenario]
+        return _apply_upside_down_override(
+            [_parse_scenario_arg(item) for item in args.scenario],
+            args.upside_down,
+        )
     if args.scenario_set == "manual":
-        return [{
+        return _apply_upside_down_override([{
             "name": "manual",
             "angle_start": np.nan,
             "angle_end": np.nan,
             "upside_down": np.nan,
             "use_weld_opt_defaults": True,
-        }]
-    return [_scenario_from_tuple(item) for item in SCENARIO_SETS[args.scenario_set]]
+        }], args.upside_down)
+    return _apply_upside_down_override(
+        [_scenario_from_tuple(item) for item in SCENARIO_SETS[args.scenario_set]],
+        args.upside_down,
+    )
 
 
 def _write_summaries(rows: list[dict], output_dir: Path) -> None:
@@ -245,6 +291,7 @@ def _run_once(args, run_index: int, scenario_run: int,
     if not scenario.get("use_weld_opt_defaults", False):
         env["WELD_OPT_ANGLE_START"] = str(scenario["angle_start"])
         env["WELD_OPT_ANGLE_END"] = str(scenario["angle_end"])
+    if isinstance(scenario["upside_down"], bool):
         env["WELD_OPT_WELD_UPSIDE_DOWN"] = "1" if scenario["upside_down"] else "0"
     if seed is not None:
         env["WELD_OPT_SEED"] = str(seed)
@@ -338,8 +385,17 @@ def _parse_args() -> argparse.Namespace:
         "--scenario",
         action="append",
         help=(
-            "Custom scenario as name:start:end[:upside_down]. Angles may use "
-            "pi, for example top_quarter:pi/2:pi:true. Can be repeated."
+            "Scenario as either a preset name or start:end. Angles may use "
+            "pi, for example quarter_right_to_top or 0:pi/2. Can be repeated."
+        ),
+    )
+    parser.add_argument(
+        "--upside-down",
+        type=_parse_bool,
+        default=None,
+        help=(
+            "Override whether scenarios weld upside down. Use true or false. "
+            "If omitted, presets use the value defined in SCENARIO_SETS."
         ),
     )
     parser.add_argument("--stop-on-failure", action="store_true")

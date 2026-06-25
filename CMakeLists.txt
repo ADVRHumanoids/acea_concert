@@ -6,6 +6,7 @@ find_package(ament_cmake REQUIRED)
 # --- Python scripts (runnable via ros2 run or directly) ---
 install(PROGRAMS
   scripts/apply_gz_wrench.py
+  scripts/kill_concert_stack
   scripts/omnisteering_sine_command.py
   src/drive_base_to_weld_pose.py
   src/home_to_weld_start.py

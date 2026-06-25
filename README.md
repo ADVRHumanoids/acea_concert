@@ -9,6 +9,31 @@ The workflow is split into two parts:
 1. Offline: run `weld_opt.py`, optionally replay with `replayer.py`, and inspect the RViz visualization.
 2. Online: launch simulation, start XBot GUI, publish the current gap pose, compensate gravity, home to the optimized start, drive the base to the optimized pose, and run the controller.
 
+## 0. Docker Environment
+
+Start the Docker container before running the offline or online pipeline:
+
+```bash
+xhost +local:docker
+cd /home/user/concert_ws/src/acea_concert/docker
+docker compose up -d --build
+docker compose exec dev bash
+```
+
+Open another terminal in the same running container when needed:
+
+```bash
+cd /home/user/concert_ws/src/acea_concert/docker
+docker compose exec dev bash
+```
+
+Stop the container when finished:
+
+```bash
+cd /home/user/concert_ws/src/acea_concert/docker
+docker compose down
+```
+
 ## 1. Offline Optimization
 
 Command pipeline:

@@ -1,4 +1,19 @@
-from modular.URDF_writer import *
+import contextlib
+import os
+import sys
+
+from modular.URDF_writer import UrdfWriter, write_file_to_stdout
+
+
+@contextlib.contextmanager
+def suppress_stdout():
+    with open(os.devnull, "w") as devnull:
+        old_stdout = sys.stdout
+        try:
+            sys.stdout = devnull
+            yield
+        finally:
+            sys.stdout = old_stdout
 
 is_floating_base = True
 

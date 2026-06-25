@@ -42,6 +42,21 @@ def generate_launch_description() -> LaunchDescription:
             default_value="false",
             description="Enable the YOLO-seg detector frontend (needs the YOLO venv).",
         ),
+        DeclareLaunchArgument(
+            "rgb_topic",
+            default_value="/D435i_camera_front/color/image_raw",
+            description="RGB image topic override.",
+        ),
+        DeclareLaunchArgument(
+            "depth_topic",
+            default_value="/D435i_camera_front/depth_image",
+            description="Depth image topic override.",
+        ),
+        DeclareLaunchArgument(
+            "camera_info_topic",
+            default_value="/D435i_camera_front/camera_info",
+            description="Camera info topic override. If not published, nominal intrinsics fallback is used.",
+        ),
 
         Node(
             package="acea_concert",
@@ -51,6 +66,9 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[
                 LaunchConfiguration("detector_config"),
                 {"use_yolo_seg_frontend": LaunchConfiguration("use_yolo_seg_frontend")},
+                {"rgb_topic": LaunchConfiguration("rgb_topic")},
+                {"depth_topic": LaunchConfiguration("depth_topic")},
+                {"camera_info_topic": LaunchConfiguration("camera_info_topic")},
             ],
         ),
         Node(

@@ -34,6 +34,24 @@ install(DIRECTORY src/viz/
   FILES_MATCHING PATTERN "*.py"
 )
 
+# --- ACEA perception detection module ---
+# Pipe-junction detector (camera-frame weld-seam gap geometry) + the perception
+# gap_pose_robot publisher that republishes /gap/pose_robot in base_link as a
+# drop-in replacement for the Gazebo ground-truth gap_pose_publisher.py.
+# See src/detection/README.md. acea_alignment/ is installed next to the nodes so
+# their `from acea_alignment...` imports resolve under `ros2 run`.
+install(PROGRAMS
+  src/detection/acea_pipe_junction_node.py
+  src/detection/gap_pose_robot_node.py
+  src/detection/acea_seam_detector.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY src/detection/acea_alignment/
+  DESTINATION lib/${PROJECT_NAME}/acea_alignment
+  FILES_MATCHING PATTERN "*.py"
+)
+
 # --- ROS share files ---
 install(DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
@@ -52,6 +70,7 @@ install(DIRECTORY rviz/
 
 install(DIRECTORY world/
   DESTINATION share/${PROJECT_NAME}/world
+  OPTIONAL
   FILES_MATCHING PATTERN "*.sdf"
 )
 

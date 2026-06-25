@@ -160,6 +160,24 @@ This publishes the current gap pose with respect to `base_link`:
 
 This node is ground truth for simulation. In the real setup, it should be replaced by perception.
 
+### Gap Pose From Perception
+
+The perception replacement publishes the same controller contract:
+
+```text
+/gap/pose_robot
+```
+
+Launch it instead of `src/gap_pose_publisher.py` when RGB-D camera data and the
+camera-to-`base_link` TF are available:
+
+```bash
+ros2 launch acea_concert detection.launch.py
+```
+
+Do not run the ground-truth publisher and the perception publisher at the same
+time, because they publish the same `/gap/pose_robot` topic.
+
 ### Gravity Compensation
 
 ```bash

@@ -178,6 +178,133 @@ ros2 launch acea_concert detection.launch.py
 Do not run the ground-truth publisher and the perception publisher at the same
 time, because they publish the same `/gap/pose_robot` topic.
 
+The perception pipeline is:
+
+```text
+D435i RGB/depth/camera_info
+  -> acea_pipe_junction_node.py
+  -> /acea/pipe_junction/detection
+  -> /acea/weld_seam/gap_plane       camera frame
+  -> gap_pose_robot_node.py
+  -> /gap/pose_robot                 base_link
+```
+
+Default camera topics match `weld_sim.launch.py`:
+
+```text
+/D435i_camera_front/color/image_raw
+/D435i_camera_front/depth_image
+/D435i_camera_front/camera_info
+```
+
+To launch the detector with explicit topics:
+
+```bash
+ros2 launch acea_concert detection.launch.py \
+  rgb_topic:=/D435i_camera_front/color/image_raw \
+  depth_topic:=/D435i_camera_front/depth_image \
+  camera_info_topic:=/D435i_camera_front/camera_info
+```
+
+For a real wrist camera, remap these three topics to the camera driver topics.
+For example:
+
+```bash
+ros2 launch acea_concert detection.launch.py \
+  rgb_topic:=/camera_front/color/image_raw \
+  depth_topic:=/camera_front/aligned_depth_to_color/image_raw \
+  camera_info_topic:=/camera_front/color/camera_info
+```
+
+The detector publishes the gap geometry only after an accepted detection. The
+main debug topics are:
+
+```bash
+ros2 topic echo /acea/pipe_junction/detection --field data
+ros2 topic echo /acea/weld_seam/gap_plane --field data
+ros2 topic echo /gap/pose_robot
+```
+
+Expected successful detection:
+
+```text
+/acea/pipe_junction/detection:
+  state = STOP_AND_LOCALIZE
+  detector_accepted = true
+  gap_plane_available = true
+  weld_seam_pose_available = true
+
+/acea/weld_seam/gap_plane:
+  valid = true
+  pose_valid = true
+  frame_id = D435i_camera_front_depth_optical_frame
+
+/gap/pose_robot:
+  frame_id = base_link
+```
+
+`/gap/pose_robot` is not published if either:
+
+1. the detector has not accepted the gap yet, or
+2. the TF from the camera frame to `base_link` is missing.
+
+Check the camera TF with:
+
+```bash
+ros2 run tf2_ros tf2_echo base_link D435i_camera_front_depth_optical_frame
+```
+
+If this transform is missing in simulation, launch `weld_sim.launch.py` with:
+
+```text
+publish_robot_state_tf:=true
+realsense:=true
+```
+
+If this transform is missing on the real robot, start the proper
+`robot_state_publisher`, XBot2 description publisher, or a calibrated static TF
+for the wrist camera.
+
+### Perception Smoke Test In Simulation
+
+Terminal 1:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /opt/xbot/setup.sh 2>/dev/null || true
+source /home/user/concert_ws/install/setup.bash
+export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
+export __GLX_VENDOR_LIBRARY_NAME=nvidia
+
+ros2 launch acea_concert weld_sim.launch.py \
+  gui:=false \
+  xbot2:=false \
+  rviz:=false
+```
+
+Terminal 2:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /home/user/concert_ws/install/setup.bash
+
+ros2 launch acea_concert detection.launch.py
+```
+
+Terminal 3:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source /home/user/concert_ws/install/setup.bash
+
+ros2 topic echo /acea/pipe_junction/detection --field data
+ros2 topic echo /acea/weld_seam/gap_plane --field data
+ros2 topic echo /gap/pose_robot
+```
+
+For the default 1 cm marker scene, the expected result is a valid detection and
+a `/gap/pose_robot` message in `base_link`.
+
 ### Gravity Compensation
 
 ```bash
@@ -350,6 +477,11 @@ base_R_ee_des = base_R_gap * gap_R_ee_des
 - `src/replayer.py`: replay and RViz visualization of the optimized trajectory.
 - `launch/weld_sim.launch.py`: simulation launch file; accepts `mat_file` and `optimized_start`.
 - `src/gap_pose_publisher.py`: simulation ground-truth gap pose publisher.
+- `launch/detection.launch.py`: perception launch file for detector + gap pose transform.
+- `src/detection/acea_pipe_junction_node.py`: RGB-D gap detector and camera-frame gap plane publisher.
+- `src/detection/gap_pose_robot_node.py`: transforms camera-frame gap geometry into `/gap/pose_robot` in `base_link`.
+- `config/detector.yaml`: detector topic and perception parameters.
+- `config/gap_pose_robot.yaml`: `/gap/pose_robot` TF/config parameters.
 - `src/gravity_comp_node.py`: gravity compensation node.
 - `src/home_to_weld_start.py`: moves weld joints to trajectory node 0.
 - `src/drive_base_to_weld_pose.py`: drives the mobile base to the optimized relative gap pose.

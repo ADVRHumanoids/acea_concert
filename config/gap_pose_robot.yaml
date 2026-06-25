@@ -1,0 +1,38 @@
+# Perception gap_pose_robot publisher (gap_pose_robot_node.py).
+# Transforms the detector's camera-frame gap geometry into base_link and
+# republishes /gap/pose_robot (PoseStamped) with the same gap-frame convention
+# as the ground-truth gap_pose_publisher.py (y = pipe axis, x = radial, z = x X y).
+/**:
+  ros__parameters:
+    input_gap_plane_topic: /acea/weld_seam/gap_plane
+    output_pose_topic: /gap/pose_robot
+    output_matrix_topic: /gap/pose_robot_matrix
+    # Debug-only numeric 4x4 transform. The controller should consume
+    # /gap/pose_robot, not this matrix topic.
+    publish_matrix: false
+
+    # base_link is the frame used across acea_concert (matches gap_pose_publisher.py).
+    target_frame: base_link
+    # Empty -> use the frame_id stamped on the detector's gap message.
+    camera_frame_override: ''
+
+    # tf2 lookup camera_optical_frame -> target_frame. This should be the normal
+    # online path. If a static fallback is needed for a lab/offline setup, enable
+    # it only after setting the real camera extrinsic below.
+    use_tf: true
+    tf_timeout_s: 0.5
+    static_fallback_enabled: false
+    allow_identity_static_fallback: false
+    static_cam_to_base_xyz: [0.0, 0.0, 0.0]
+    static_cam_to_base_quat_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+    # Sign disambiguation of the perceived axis / radial vs the GT convention.
+    # Flip to -1.0 if the published frame points the opposite way (verify live).
+    axis_sign: 1.0
+    radial_sign: 1.0
+
+    require_pose_valid: true
+    require_metric_3d: true
+    reject_assumed_depth: true
+    broadcast_tf: false
+    gap_tf_child_frame: gap_seam

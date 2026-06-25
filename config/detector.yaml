@@ -1,0 +1,26 @@
+# Pipe-junction detector (acea_pipe_junction_node.py).
+# Subscribes RGB + depth + camera_info; publishes the junction detection and the
+# depth-backprojected weld-seam gap geometry (camera frame) consumed by
+# gap_pose_robot_node. Only high-signal params are set; the rest keep the node's
+# in-code defaults (_declare_params in acea_pipe_junction_node.py).
+/**:
+  ros__parameters:
+    rgb_topic: /camera/rgb
+    depth_topic: /camera/depth
+    camera_info_topic: /camera/camera_info
+    detection_topic: /acea/pipe_junction/detection
+
+    sync_slop_s: 0.3
+    junction_acceptance_mode: rgb_depth
+    use_depth_gap_gate: true
+    use_yolo_seg_frontend: false
+    allow_nominal_intrinsics_fallback: true
+
+    # Weld-seam gap geometry: point = depth-backprojected seam surface,
+    # normal = pipe axis. Published in the camera frame; gap_pose_robot_node
+    # transforms it into base_link.
+    publish_weld_gap_geometry: true
+    weld_gap_require_detector_accepted: true
+    weld_seam_pose_topic: /acea/weld_seam/pose
+    weld_gap_plane_topic: /acea/weld_seam/gap_plane
+    weld_marker_topic: /acea/weld_seam/markers

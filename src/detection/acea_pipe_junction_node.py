@@ -71,6 +71,7 @@ except Exception as exc:  # pragma: no cover - allows offline import/test withou
         def create_subscription(self, *a: Any, **k: Any) -> None: ...
         def create_publisher(self, *a: Any, **k: Any) -> "Node": return self
         def create_timer(self, *a: Any, **k: Any) -> None: ...
+        def destroy_subscription(self, *a: Any, **k: Any) -> None: ...
         def publish(self, *a: Any, **k: Any) -> None: ...
         def get_logger(self) -> "_StubLogger": return _StubLogger()
 
@@ -769,7 +770,7 @@ class OnlinePipeJunctionDetector:
         valid = np.isfinite(depth) & (depth > min_depth) & (depth < max_depth)
         threshold_info = _depth_threshold_kmeans(depth, valid, int(self.params["sample_stride"]))
         pipe_mask_raw = valid & (depth <= float(threshold_info["threshold_m"]))
-        pipe_mask = self._largest_connected_pipe_component(pipe_mask_raw)
+        pipe_mask = self._select_pipe_connected_component(pipe_mask_raw, depth, k)
         ys, xs = np.nonzero(pipe_mask)
         if xs.size < int(self.params["min_pipe_pixels"]):
             raise ValueError(f"Only {xs.size} pipe pixels selected")
@@ -850,14 +851,22 @@ class OnlinePipeJunctionDetector:
             threshold_info=threshold_info,
         )
 
-    def _largest_connected_pipe_component(self, mask: np.ndarray) -> np.ndarray:
-        """Keep the largest connected depth component as the actual pipe body.
+    def _select_pipe_connected_component(
+        self,
+        mask: np.ndarray,
+        depth: np.ndarray,
+        k: np.ndarray,
+    ) -> np.ndarray:
+        """Keep the connected depth component that best matches the pipe body.
 
         The raw near-depth mask can include small disconnected pieces from the
         robot, cut edges, sensor artifacts, or background fragments. Treating all
-        those pixels as one "pipe" destabilizes PCA/coverage/localization. The
-        real pipe surface is expected to be the dominant connected foreground
-        component in the camera view, so keep that component and drop the rest.
+        those pixels as one "pipe" destabilizes PCA/coverage/localization.
+
+        The real pipe is not always the largest component in Gazebo: a nearby
+        wall/floor strip can be larger. Score components by horizontal support
+        and by how close their image height is to the expected projected pipe
+        diameter, computed from ``pipe_radius_m``, depth, and camera intrinsics.
         """
         if mask.ndim != 2 or not np.any(mask):
             return mask
@@ -878,8 +887,42 @@ class OnlinePipeJunctionDetector:
         if sizes.size <= 1:
             return mask
         sizes[0] = 0
-        best_label = int(np.argmax(sizes))
-        if int(sizes[best_label]) < min_pixels:
+
+        fy = float(k[1, 1]) if k.shape == (3, 3) else 0.0
+        radius_m = float(self.params["pipe_radius_m"])
+        best_label = 0
+        best_score = -1.0
+        for label in range(1, sizes.size):
+            count_i = int(sizes[label])
+            if count_i < min_pixels:
+                continue
+            ys, xs = np.nonzero(labels == label)
+            if xs.size == 0:
+                continue
+            z = depth[ys, xs].astype(np.float64)
+            z = z[np.isfinite(z) & (z > 0.0)]
+            if z.size == 0:
+                continue
+            bbox_w = float(xs.max() - xs.min() + 1)
+            bbox_h = float(ys.max() - ys.min() + 1)
+            median_z = float(np.median(z))
+            expected_diameter_px = 0.0
+            if fy > 1e-6 and radius_m > 1e-6 and median_z > 1e-6:
+                expected_diameter_px = 2.0 * radius_m * fy / median_z
+            if expected_diameter_px > 1.0 and bbox_h > 1.0:
+                height_error = abs(math.log(max(bbox_h, 1.0) / expected_diameter_px))
+                height_score = math.exp(-height_error)
+            else:
+                height_score = 1.0
+            # Width matters because the pipe spans the camera horizontally in
+            # this task, but size is damped so large background components do
+            # not dominate when their projected height is wrong.
+            score = bbox_w * math.sqrt(float(count_i)) * height_score
+            if score > best_score:
+                best_score = score
+                best_label = label
+
+        if best_label <= 0 or int(sizes[best_label]) < min_pixels:
             return mask
         return labels == best_label
 
@@ -2190,15 +2233,17 @@ class AceaPipeJunctionNode(Node):
         self._info_recv: deque[float] = deque(maxlen=30)
         self._effective_use_receive_time = bool(self.params.get("use_receive_time_for_sync", False))
         self._receive_time_fallback_logged = False
+        self._last_subscription_reset_time = 0.0
 
-        qos = QoSProfile(
+        self._camera_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             history=HistoryPolicy.KEEP_LAST,
             depth=int(self.params["queue_size"]),
         )
-        self.create_subscription(Image, str(self.params["rgb_topic"]), self._rgb_cb, qos)
-        self.create_subscription(Image, str(self.params["depth_topic"]), self._depth_cb, qos)
-        self.create_subscription(CameraInfo, str(self.params["camera_info_topic"]), self._info_cb, qos)
+        self._rgb_sub = None
+        self._depth_sub = None
+        self._info_sub = None
+        self._create_camera_subscriptions()
 
         self.detection_pub = self.create_publisher(String, str(self.params["detection_topic"]), 10)
         self.detected_pub = self.create_publisher(Bool, str(self.params["detected_topic"]), 10)
@@ -2269,6 +2314,7 @@ class AceaPipeJunctionNode(Node):
             "publish_waiting_status": True,
             "waiting_status_period_s": 1.0,
             "stream_stale_s": 2.0,
+            "stale_subscription_reset_s": 5.0,
             "process_every_n": 1,
             "allow_nominal_intrinsics_fallback": True,
             "nominal_fx_px": 733.0,
@@ -2497,6 +2543,58 @@ class AceaPipeJunctionNode(Node):
         if bool(self.params["allow_stale_camera_info"]):
             return valid_pairs[-1]
         return min(valid_pairs, key=lambda pair: abs(pair[0] - target))
+
+    def _create_camera_subscriptions(self) -> None:
+        self._rgb_sub = self.create_subscription(
+            Image,
+            str(self.params["rgb_topic"]),
+            self._rgb_cb,
+            self._camera_qos,
+        )
+        self._depth_sub = self.create_subscription(
+            Image,
+            str(self.params["depth_topic"]),
+            self._depth_cb,
+            self._camera_qos,
+        )
+        self._info_sub = self.create_subscription(
+            CameraInfo,
+            str(self.params["camera_info_topic"]),
+            self._info_cb,
+            self._camera_qos,
+        )
+
+    def _reset_camera_subscriptions(self, reason: str) -> None:
+        now = self._now_sec()
+        min_period = float(self.params["stale_subscription_reset_s"])
+        if now - self._last_subscription_reset_time < min_period:
+            return
+        self._last_subscription_reset_time = now
+
+        for sub in (self._rgb_sub, self._depth_sub, self._info_sub):
+            if sub is None:
+                continue
+            try:
+                self.destroy_subscription(sub)
+            except Exception as exc:
+                self.get_logger().warn(
+                    f"camera subscription destroy failed during stale recovery: {type(exc).__name__}: {exc}",
+                    throttle_duration_sec=10.0,
+                )
+
+        self.rgb_queue.clear()
+        self.depth_queue.clear()
+        self.info_queue.clear()
+        self._rgb_recv.clear()
+        self._depth_recv.clear()
+        self._info_recv.clear()
+        self.last_processed_rgb_time = None
+        self._create_camera_subscriptions()
+        self.get_logger().warn(
+            f"camera streams became stale ({reason}); recreated RGB/depth/camera_info subscriptions "
+            "to recover after a Gazebo/ros_gz_bridge restart.",
+            throttle_duration_sec=5.0,
+        )
 
     @staticmethod
     def _camera_info_valid(msg: CameraInfo) -> bool:
@@ -2842,6 +2940,13 @@ class AceaPipeJunctionNode(Node):
             reason = "waiting_for_rgb_depth_sync"
         else:
             reason = "waiting_for_next_frame"
+
+        if reason in {
+            "waiting_for_rgb_stale",
+            "waiting_for_depth_stale",
+            "waiting_for_camera_info_stale",
+        }:
+            self._reset_camera_subscriptions(reason)
 
         status = {
             "state": "WAITING_FOR_SYNC",

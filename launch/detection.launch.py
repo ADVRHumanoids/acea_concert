@@ -82,6 +82,11 @@ def generate_launch_description() -> LaunchDescription:
             default_value="2.0",
             description="Mark a camera stream stale when no fresh message was received for this many seconds.",
         ),
+        DeclareLaunchArgument(
+            "stale_subscription_reset_s",
+            default_value="5.0",
+            description="Minimum interval before recreating stale camera subscriptions after a bridge restart.",
+        ),
 
         Node(
             package="acea_concert",
@@ -99,6 +104,7 @@ def generate_launch_description() -> LaunchDescription:
                 {"sync_slop_s": LaunchConfiguration("sync_slop_s")},
                 {"use_receive_time_for_sync": LaunchConfiguration("use_receive_time_for_sync")},
                 {"stream_stale_s": LaunchConfiguration("stream_stale_s")},
+                {"stale_subscription_reset_s": LaunchConfiguration("stale_subscription_reset_s")},
             ],
         ),
         Node(

@@ -18,6 +18,7 @@
     sync_slop_s: 1.0
     use_receive_time_for_sync: true
     stream_stale_s: 2.0
+    stale_subscription_reset_s: 5.0
     junction_acceptance_mode: rgb_depth
     use_depth_gap_gate: true
     use_yolo_seg_frontend: false

@@ -121,9 +121,9 @@ if weld_trajectory_radius <= 0.0:
     )
 
 trajectory_scenario_name = 'manual'
-angle_weld_start = np.pi
-angle_weld_end = 2 * np.pi
-weld_upside_down = True
+angle_weld_start = 1 / 2 * np.pi
+angle_weld_end = np.pi
+weld_upside_down = False
 
 trajectory_scenario_name = os.environ.get(
     'WELD_OPT_SCENARIO_NAME', trajectory_scenario_name)

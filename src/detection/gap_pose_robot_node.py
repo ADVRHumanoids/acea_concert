@@ -45,6 +45,37 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from acea_alignment.weld_seam import rotation_matrix_to_quaternion_xyzw  # noqa: E402
 
+# Shared single-instance guard: a second bridge would publish a conflicting
+# /gap/pose_robot. ROS-free helper; degrade to no-ops if it is ever missing.
+try:
+    from acea_detection_runtime import (  # noqa: E402
+        DuplicateInstanceError,
+        SingleInstanceLock,
+        count_named_nodes,
+        instance_id,
+    )
+except Exception:  # pragma: no cover - degrade gracefully if helper is absent
+    import os as _os
+    import socket as _socket
+
+    class DuplicateInstanceError(RuntimeError):  # type: ignore
+        pass
+
+    class SingleInstanceLock:  # type: ignore
+        def __init__(self, *_a, **_k):
+            self.acquired = True
+            self.holder = ""
+
+        def release(self):
+            ...
+
+    def count_named_nodes(_node):  # type: ignore
+        return 1
+
+    def instance_id():  # type: ignore
+        return f"{_socket.gethostname()}:{_os.getpid()}"
+
+_BRIDGE_LOCK_NAME = "gap_pose_robot_node"
 _EPS = 1e-9
 
 
@@ -176,6 +207,21 @@ def _build_node_class():
         def __init__(self) -> None:
             super().__init__("gap_pose_robot_node")
             p = self.declare_parameter
+            self.instance_id = instance_id()
+
+            # Refuse a second bridge on this host: two would publish a conflicting
+            # /gap/pose_robot. Override with allow_duplicate:=true.
+            self.allow_duplicate = bool(p("allow_duplicate", False).value)
+            self._single_instance = SingleInstanceLock(_BRIDGE_LOCK_NAME)
+            if not self._single_instance.acquired and not self.allow_duplicate:
+                raise DuplicateInstanceError(
+                    f"another '{_BRIDGE_LOCK_NAME}' is already running on this host "
+                    f"(holder {self._single_instance.holder or 'unknown'}). Two of them "
+                    "publish a conflicting /gap/pose_robot. Stop the other first:  pkill -f "
+                    f"{_BRIDGE_LOCK_NAME}  (or close its terminal/launch), then start one. "
+                    "To run two on purpose, pass -p allow_duplicate:=true."
+                )
+
             self.input_topic = p("input_gap_plane_topic", "/acea/weld_seam/gap_plane").value
             self.output_pose_topic = p("output_pose_topic", "/gap/pose_robot").value
             self.output_matrix_topic = p("output_matrix_topic", "/gap/pose_robot_matrix").value
@@ -212,11 +258,22 @@ def _build_node_class():
                 if self.publish_matrix else None)
             self.create_subscription(String, self.input_topic, self._on_gap_plane, 10)
 
+            # Monitor for duplicates the file lock cannot see (another container/host).
+            self.create_timer(5.0, self._check_duplicate_graph)
+
             self.get_logger().info(
-                f"gap_pose_robot: {self.input_topic} (camera frame) -> "
+                f"gap_pose_robot [{self.instance_id}]: {self.input_topic} (camera frame) -> "
                 f"{self.output_pose_topic} (frame {self.target_frame}); "
                 f"tf={'on' if self.use_tf else 'off'}, "
                 f"static_fallback={'on' if self.static_fallback_enabled else 'off'}")
+
+        def _check_duplicate_graph(self) -> None:
+            if count_named_nodes(self) > 1:
+                self.get_logger().error(
+                    f"Multiple live nodes named '{self.get_name()}' on the ROS graph "
+                    f"(this one: {self.instance_id}) — they publish a conflicting "
+                    f"{self.output_pose_topic}. Keep exactly one bridge running.",
+                    throttle_duration_sec=10.0)
 
         # -- camera -> target transform ---------------------------------------
         def _resolve_transform(self, camera_frame: str):
@@ -349,13 +406,20 @@ def main(args=None) -> None:
     from rclpy.executors import ExternalShutdownException
 
     rclpy.init(args=args)
-    node = _build_node_class()()
+    node = None
     try:
+        node = _build_node_class()()
         rclpy.spin(node)
+    except DuplicateInstanceError as exc:
+        print(f"[gap_pose_robot_node] refusing to start: {exc}", file=sys.stderr)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
+        if node is not None:
+            lock = getattr(node, "_single_instance", None)
+            if lock is not None:
+                lock.release()
+            node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
 

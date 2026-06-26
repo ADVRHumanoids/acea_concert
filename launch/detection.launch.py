@@ -67,6 +67,21 @@ def generate_launch_description() -> LaunchDescription:
             default_value="/D435i_camera_front/camera_info",
             description="Camera info topic override. If not published, nominal intrinsics fallback is used.",
         ),
+        DeclareLaunchArgument(
+            "sync_slop_s",
+            default_value="1.0",
+            description="Maximum RGB/depth receive-time mismatch accepted by the detector [s].",
+        ),
+        DeclareLaunchArgument(
+            "use_receive_time_for_sync",
+            default_value="true",
+            description="Use node receive time instead of camera header stamps for RGB/depth sync.",
+        ),
+        DeclareLaunchArgument(
+            "stream_stale_s",
+            default_value="2.0",
+            description="Mark a camera stream stale when no fresh message was received for this many seconds.",
+        ),
 
         Node(
             package="acea_concert",
@@ -81,6 +96,9 @@ def generate_launch_description() -> LaunchDescription:
                 {"rgb_topic": LaunchConfiguration("rgb_topic")},
                 {"depth_topic": LaunchConfiguration("depth_topic")},
                 {"camera_info_topic": LaunchConfiguration("camera_info_topic")},
+                {"sync_slop_s": LaunchConfiguration("sync_slop_s")},
+                {"use_receive_time_for_sync": LaunchConfiguration("use_receive_time_for_sync")},
+                {"stream_stale_s": LaunchConfiguration("stream_stale_s")},
             ],
         ),
         Node(

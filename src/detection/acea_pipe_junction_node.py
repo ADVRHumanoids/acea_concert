@@ -1841,8 +1841,16 @@ class OnlinePipeJunctionDetector:
             return LocalizationResult(None, None, int(xs.size))
 
         unique_uv = np.unique(np.stack([xs, ys], axis=1), axis=0)
+        unique_uv = self._coherent_depth_support_uv(unique_uv, depth)
+        if unique_uv.shape[0] < int(self.params["min_surface_points"]):
+            return LocalizationResult(None, None, int(unique_uv.shape[0]))
         points_camera = _backproject(depth, unique_uv[:, 0], unique_uv[:, 1], k)
-        surface_center = np.median(points_camera, axis=0)
+        # Use a real point close to the median support instead of publishing a
+        # component-wise median that may combine y from one depth component and z
+        # from another. That was fragile when the seam column crossed both pipe
+        # surface and background/pipe-end depth.
+        median_point = np.median(points_camera, axis=0)
+        surface_center = points_camera[int(np.argmin(np.linalg.norm(points_camera - median_point, axis=1)))]
 
         view_direction = _normalize(surface_center)
         axis = _normalize(tracker.pipe_axis_xyz)
@@ -1850,6 +1858,68 @@ class OnlinePipeJunctionDetector:
         radial_direction = _normalize(radial_direction)
         pipe_center = surface_center + float(self.params["pipe_radius_m"]) * radial_direction
         return LocalizationResult(surface_center, pipe_center, int(unique_uv.shape[0]))
+
+    def _coherent_depth_support_uv(self, uv: np.ndarray, depth: np.ndarray) -> np.ndarray:
+        """Keep the most depth-coherent vertical component in the seam support.
+
+        The raw support is a thin column through the pipe mask. In Gazebo, and
+        near a cut pipe, that column may contain disconnected depth components
+        (real pipe surface plus background / lower surface / edge artifacts).
+        Taking all pixels together can create a 3D point that is numerically
+        valid but geometrically wrong. Prefer the connected row segment with the
+        smallest robust depth spread; fall back to the full support if the split
+        is not informative.
+        """
+        if uv.shape[0] == 0:
+            return uv
+        xs = uv[:, 0].astype(np.int64)
+        ys = uv[:, 1].astype(np.int64)
+        z = depth[ys, xs].astype(np.float64)
+        finite = np.isfinite(z) & (z > 0.0)
+        uv = uv[finite]
+        ys = ys[finite]
+        z = z[finite]
+        if uv.shape[0] == 0:
+            return uv
+
+        rows = np.unique(ys)
+        if rows.size <= 1:
+            return uv
+
+        segments: list[tuple[int, int]] = []
+        start = int(rows[0])
+        prev = int(rows[0])
+        for row in rows[1:]:
+            row_i = int(row)
+            if row_i - prev > 2:
+                segments.append((start, prev))
+                start = row_i
+            prev = row_i
+        segments.append((start, prev))
+
+        min_points = max(12, min(int(self.params["min_surface_points"]), 40))
+        best_mask = None
+        best_score = float("inf")
+        for start, end in segments:
+            mask = (ys >= start) & (ys <= end)
+            count = int(mask.sum())
+            if count < min_points:
+                continue
+            z_seg = z[mask]
+            q10, q50, q90 = np.percentile(z_seg, [10.0, 50.0, 90.0])
+            robust_spread = float(q90 - q10)
+            row_span = max(1, end - start + 1)
+            # Prefer compact, coherent depth components. The light count bonus
+            # breaks ties in favour of better-supported components without
+            # letting large background components dominate.
+            score = robust_spread + 0.002 / math.sqrt(float(count)) + 0.0002 * float(row_span)
+            if np.isfinite(q50) and score < best_score:
+                best_score = score
+                best_mask = mask
+
+        if best_mask is None:
+            return uv
+        return uv[best_mask]
 
     def _pipe_side_coverage(self, pipe_mask: np.ndarray) -> tuple[float, float]:
         """Fraction of pipe-surface pixels in the LEFT vs RIGHT third of the image.

@@ -115,6 +115,8 @@ Two recurring runtime failures are guarded against (see the package README,
 - The detector needs a working **depth** stream; in Gazebo bridge the depth
   camera sensor to `/camera/depth` (+ `rgb`, `camera_info`) or remap the topics.
 - The contract (`/gap/pose_robot` in `base_link`) is what `acea_concert`
-  integrates against. The bridge transform is exact; if perception disagrees with
-  the ground truth, suspect the camera->`base_link` TF (see the package README,
+  integrates against. The bridge transform and the camera->`base_link` extrinsic
+  are correct (the TF matches the Gazebo camera mount). The detector now keeps
+  the seam 3D support on a coherent depth component and uses the ACEA concert
+  pipe radius (`0.10 m`) when estimating the gap centre (see the package README,
   "Compare Perception Against Ground Truth").

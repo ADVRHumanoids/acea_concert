@@ -22,6 +22,10 @@
     use_yolo_seg_frontend: false
     allow_nominal_intrinsics_fallback: true
     variant_a_min_vertical_run_px: 8
+    # Radius of the pipe used to lift the visible seam surface point to the
+    # centre of the gap plane. Keep this aligned with src/weld_opt.py /
+    # weld_sim.launch.py; ACEA concert simulation currently uses 0.10 m.
+    pipe_radius_m: 0.10
 
     # Weld-seam gap geometry: point = depth-backprojected seam surface,
     # normal = pipe axis. Published in the camera frame; gap_pose_robot_node

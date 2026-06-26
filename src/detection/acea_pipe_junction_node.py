@@ -28,6 +28,7 @@ from typing import Any
 import numpy as np
 from PIL import Image as PilImage
 from PIL import ImageDraw
+from scipy import ndimage as scipy_ndimage
 
 try:
     import rclpy
@@ -767,7 +768,8 @@ class OnlinePipeJunctionDetector:
         max_depth = float(self.params["max_depth_m"])
         valid = np.isfinite(depth) & (depth > min_depth) & (depth < max_depth)
         threshold_info = _depth_threshold_kmeans(depth, valid, int(self.params["sample_stride"]))
-        pipe_mask = valid & (depth <= float(threshold_info["threshold_m"]))
+        pipe_mask_raw = valid & (depth <= float(threshold_info["threshold_m"]))
+        pipe_mask = self._largest_connected_pipe_component(pipe_mask_raw)
         ys, xs = np.nonzero(pipe_mask)
         if xs.size < int(self.params["min_pipe_pixels"]):
             raise ValueError(f"Only {xs.size} pipe pixels selected")
@@ -847,6 +849,39 @@ class OnlinePipeJunctionDetector:
             pipe_pose_residual_m=float(xyz_fit["residual_m"]),
             threshold_info=threshold_info,
         )
+
+    def _largest_connected_pipe_component(self, mask: np.ndarray) -> np.ndarray:
+        """Keep the largest connected depth component as the actual pipe body.
+
+        The raw near-depth mask can include small disconnected pieces from the
+        robot, cut edges, sensor artifacts, or background fragments. Treating all
+        those pixels as one "pipe" destabilizes PCA/coverage/localization. The
+        real pipe surface is expected to be the dominant connected foreground
+        component in the camera view, so keep that component and drop the rest.
+        """
+        if mask.ndim != 2 or not np.any(mask):
+            return mask
+        min_pixels = max(1, int(self.params["min_pipe_pixels"]) // 4)
+
+        structure = np.array(
+            [
+                [False, True, False],
+                [True, True, True],
+                [False, True, False],
+            ],
+            dtype=bool,
+        )
+        labels, count = scipy_ndimage.label(mask, structure=structure)
+        if count <= 1:
+            return mask
+        sizes = np.bincount(labels.ravel())
+        if sizes.size <= 1:
+            return mask
+        sizes[0] = 0
+        best_label = int(np.argmax(sizes))
+        if int(sizes[best_label]) < min_pixels:
+            return mask
+        return labels == best_label
 
     def _variant_a_params(self) -> dict[str, Any]:
         """Map node params -> acea_seam_detector.detect_seam params (rest = its defaults)."""
@@ -2217,8 +2252,11 @@ class AceaPipeJunctionNode(Node):
             "weld_marker_topic": "/acea/weld_seam/markers",
             "weld_marker_cylinder_length_m": 0.6,
             "weld_marker_plane_scale": 1.3,
-            "sync_slop_s": 0.08,
-            "use_receive_time_for_sync": False,
+            # Gazebo image/depth bridges can use inconsistent header stamps on
+            # different machines. Default to receive-time sync so the detector
+            # is robust even if detector.yaml was not installed/loaded.
+            "sync_slop_s": 1.0,
+            "use_receive_time_for_sync": True,
             # If RGB and depth both arrive but never sync on header stamps (zero
             # stamps, or mixed sim/wall clock), automatically fall back to
             # receive-time sync once and warn. Set use_receive_time_for_sync:=true
@@ -2230,6 +2268,7 @@ class AceaPipeJunctionNode(Node):
             "queue_size": 10,
             "publish_waiting_status": True,
             "waiting_status_period_s": 1.0,
+            "stream_stale_s": 2.0,
             "process_every_n": 1,
             "allow_nominal_intrinsics_fallback": True,
             "nominal_fx_px": 733.0,
@@ -2707,6 +2746,7 @@ class AceaPipeJunctionNode(Node):
             "detector_accepted": accepted,
             "node_instance": self.instance_id,
             "reason": status.get("reason"),
+            "hint": status.get("hint"),
             "confidence": status.get("confidence"),
             "candidate_x_strip_px": status.get("candidate_x_strip_px"),
             "candidate_x_image_px": status.get("candidate_x_image_px"),
@@ -2719,6 +2759,20 @@ class AceaPipeJunctionNode(Node):
             "rgb_queue": status.get("rgb_queue"),
             "depth_queue": status.get("depth_queue"),
             "camera_info_queue": status.get("camera_info_queue"),
+            "rgb_topic": str(self.params["rgb_topic"]),
+            "depth_topic": str(self.params["depth_topic"]),
+            "camera_info_topic": str(self.params["camera_info_topic"]),
+            "rgb_hz": status.get("rgb_hz"),
+            "depth_hz": status.get("depth_hz"),
+            "camera_info_hz": status.get("camera_info_hz"),
+            "rgb_age_s": status.get("rgb_age_s"),
+            "depth_age_s": status.get("depth_age_s"),
+            "camera_info_age_s": status.get("camera_info_age_s"),
+            "sync_time_source": status.get("sync_time_source"),
+            "sync_slop_s": status.get("sync_slop_s"),
+            "latest_rgb_depth_dt_s": status.get("latest_rgb_depth_dt_s"),
+            "latest_rgb_info_dt_s": status.get("latest_rgb_info_dt_s"),
+            "received_synced_candidate_count": status.get("received_synced_candidate_count"),
         }
         self.detected_pub.publish(Bool(data=accepted))
         self.status_pub.publish(String(data=json.dumps(compact, sort_keys=True, allow_nan=False)))
@@ -2761,6 +2815,10 @@ class AceaPipeJunctionNode(Node):
         depth_dt = None if depth_pair is None or rgb_time is None else depth_pair[0] - rgb_time
         info_dt = None if info_pair is None or rgb_time is None else info_pair[0] - rgb_time
         latest_camera_info_valid = self._camera_info_valid(self.info_queue[-1][1]) if self.info_queue else False
+        rgb_age = self._stream_age(self._rgb_recv)
+        depth_age = self._stream_age(self._depth_recv)
+        info_age = self._stream_age(self._info_recv)
+        stale_s = float(self.params["stream_stale_s"])
 
         # Self-heal the worst sync failure: both streams flow but nothing ever
         # syncs because the header stamps are unusable (zero, or sim vs wall).
@@ -2772,6 +2830,12 @@ class AceaPipeJunctionNode(Node):
             reason = "waiting_for_depth"
         elif not self.info_queue:
             reason = "waiting_for_camera_info"
+        elif rgb_age is not None and rgb_age > stale_s:
+            reason = "waiting_for_rgb_stale"
+        elif depth_age is not None and depth_age > stale_s:
+            reason = "waiting_for_depth_stale"
+        elif info_age is not None and info_age > stale_s:
+            reason = "waiting_for_camera_info_stale"
         elif info_pair is None:
             reason = "waiting_for_valid_camera_info"
         elif depth_dt is not None and abs(depth_dt) > float(self.params["sync_slop_s"]):
@@ -2790,9 +2854,9 @@ class AceaPipeJunctionNode(Node):
             "rgb_hz": _round(self._stream_hz(self._rgb_recv), 2),
             "depth_hz": _round(self._stream_hz(self._depth_recv), 2),
             "camera_info_hz": _round(self._stream_hz(self._info_recv), 2),
-            "rgb_age_s": _round(self._stream_age(self._rgb_recv), 2),
-            "depth_age_s": _round(self._stream_age(self._depth_recv), 2),
-            "camera_info_age_s": _round(self._stream_age(self._info_recv), 2),
+            "rgb_age_s": _round(rgb_age, 2),
+            "depth_age_s": _round(depth_age, 2),
+            "camera_info_age_s": _round(info_age, 2),
             "sync_time_source": "receive" if self._effective_use_receive_time else "header",
             "latest_camera_info_valid": latest_camera_info_valid,
             "processed_frame_count": self.detector.processed_frame_count,
@@ -2831,6 +2895,15 @@ class AceaPipeJunctionNode(Node):
             return "no CameraInfo yet: check camera_info_topic (nominal-intrinsics fallback may apply)."
         if reason == "waiting_for_valid_camera_info":
             return "CameraInfo received but its K matrix is zero/invalid."
+        if reason == "waiting_for_rgb_stale":
+            return ("RGB topic exists but this detector is not receiving fresh RGB frames. "
+                    "Check topic mismatch, stale detector instance, QoS, or the RGB bridge.")
+        if reason == "waiting_for_depth_stale":
+            return ("Depth topic exists but this detector is not receiving fresh depth frames. "
+                    "Check topic mismatch, stale detector instance, QoS, or the depth bridge.")
+        if reason == "waiting_for_camera_info_stale":
+            return ("CameraInfo topic exists but this detector is not receiving fresh CameraInfo. "
+                    "Check topic mismatch, stale detector instance, or camera_info bridge.")
         if reason == "waiting_for_rgb_depth_sync":
             if depth_age is not None and depth_age > 1.0:
                 return ("depth stream stalled or much slower than RGB; check the depth rate "

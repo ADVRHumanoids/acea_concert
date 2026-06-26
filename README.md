@@ -490,7 +490,52 @@ The detector and bridge now self-protect against this:
 - if RGB and depth both flow but never sync on header stamps, the detector
   switches to receive-time sync automatically (`auto_receive_time_fallback`);
 - `WAITING_FOR_SYNC` status now reports `rgb_hz`, `depth_hz`, `camera_info_hz`,
-  `*_age_s`, `sync_time_source`, and a human `hint`.
+  `*_age_s`, `sync_time_source`, configured camera topics, and a human `hint`.
+  If one stream stalls, the reason is explicit (`waiting_for_rgb_stale`,
+  `waiting_for_depth_stale`, or `waiting_for_camera_info_stale`) instead of the
+  generic sync message.
+
+If another machine stays in `WAITING_FOR_SYNC`, do not tune the detector first.
+Read the health fields:
+
+```bash
+ros2 topic echo /acea/pipe_junction/status --field data --once
+ros2 topic info -v /acea/pipe_junction/status
+ros2 topic hz --qos-reliability best_effort /D435i_camera_front/color/image_raw
+ros2 topic hz --qos-reliability best_effort /D435i_camera_front/depth_image
+```
+
+Interpretation:
+
+```text
+waiting_for_rgb_stale
+  The RGB topic/bridge is not delivering fresh frames to this detector, even if
+  another terminal sees an RGB topic. Check topic mismatch, duplicate/stale
+  detector, QoS, or the RGB bridge.
+
+waiting_for_depth_stale
+  Same issue on the depth stream.
+
+Publisher count > 1 on /acea/pipe_junction/status or /detection
+  Two detectors are running; stop one.
+
+rgb_topic/depth_topic in the status differ from the topics tested with ros2 hz
+  The detector is subscribed to different camera topics than the ones being
+  checked.
+```
+
+The simulator normally already publishes the camera TF through the main robot
+launch. Therefore `publish_robot_state_tf` defaults to `false`. Enable it only
+as a fallback if this fails:
+
+```bash
+ros2 run tf2_ros tf2_echo base_link D435i_camera_front_depth_optical_frame
+```
+
+The front D435i camera bridge is intentionally uniform: RGB, depth, and
+CameraInfo are all bridged with `ros_gz_bridge/parameter_bridge`. Avoid mixing
+`ros_gz_image image_bridge` for RGB with `ros_gz_bridge` for depth, because that
+proved more sensitive to container/Gazebo differences across machines.
 
 If you manually move or teleport the pipe/junction in Gazebo while the detector
 is already running, restart the detector afterwards. The visual tracker has

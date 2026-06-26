@@ -397,25 +397,18 @@ def generate_launch_description():
         LaunchConfiguration("start_front_camera_bridges"),
         "' == 'true'",
     ]))
-    front_color_bridge_node = Node(
-        condition=front_camera_bridge_condition,
-        package="ros_gz_image",
-        executable="image_bridge",
-        name="d435i_front_color_bridge",
-        arguments=["/D435i_camera_front/image"],
-        remappings=[
-            ("/D435i_camera_front/image", "/D435i_camera_front/color/image_raw"),
-        ],
-        output="screen",
-    )
-    front_depth_info_bridge_node = Node(
+    front_camera_bridge_node = Node(
         condition=front_camera_bridge_condition,
         package="ros_gz_bridge",
         executable="parameter_bridge",
-        name="d435i_front_depth_info_bridge",
+        name="d435i_front_camera_bridge",
         arguments=[
+            "/D435i_camera_front/image@sensor_msgs/msg/Image[gz.msgs.Image",
             "/D435i_camera_front/depth_image@sensor_msgs/msg/Image[gz.msgs.Image",
             "/D435i_camera_front/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+        ],
+        remappings=[
+            ("/D435i_camera_front/image", "/D435i_camera_front/color/image_raw"),
         ],
         output="screen",
     )
@@ -430,9 +423,9 @@ def generate_launch_description():
         DeclareLaunchArgument("realsense", default_value="true", description="Include RealSense"),
         DeclareLaunchArgument("velodyne",  default_value="false", description="Include Velodyne"),
         DeclareLaunchArgument("start_front_camera_bridges", default_value="true",
-                              description="Start explicit GZ->ROS bridges for the front D435i RGB/depth/camera_info topics"),
-        DeclareLaunchArgument("publish_robot_state_tf", default_value="true",
-                              description="Publish URDF fixed transforms, including base_link -> D435i camera frames"),
+                              description="Start explicit ros_gz_bridge GZ->ROS bridges for the front D435i RGB/depth/camera_info topics"),
+        DeclareLaunchArgument("publish_robot_state_tf", default_value="false",
+                              description="Fallback-only: publish URDF fixed transforms if the main robot launch does not already provide base_link -> D435i camera frames"),
         DeclareLaunchArgument("pipe_radius_m", default_value=str(PIPE_RADIUS),
                               description="Pipe radius used for the spawned debug pipe [m]"),
         DeclareLaunchArgument("pipe_total_length_m", default_value=str(PIPE_TOTAL_LENGTH),
@@ -463,8 +456,7 @@ def generate_launch_description():
                               description="Yaw of the pipe/gap Y axis from nominal +Y around world Z [rad]"),
 
         robot_state_publisher_node,
-        front_color_bridge_node,
-        front_depth_info_bridge_node,
+        front_camera_bridge_node,
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(

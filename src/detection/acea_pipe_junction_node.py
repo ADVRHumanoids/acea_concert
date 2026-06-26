@@ -34,7 +34,7 @@ try:
     from rclpy.node import Node
     from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
     from sensor_msgs.msg import CameraInfo, Image
-    from std_msgs.msg import String
+    from std_msgs.msg import Bool, String
     from geometry_msgs.msg import PoseStamped
     from visualization_msgs.msg import Marker, MarkerArray
     RCLPY_IMPORT_ERROR: Exception | None = None
@@ -2034,6 +2034,8 @@ class AceaPipeJunctionNode(Node):
         self.create_subscription(CameraInfo, str(self.params["camera_info_topic"]), self._info_cb, qos)
 
         self.detection_pub = self.create_publisher(String, str(self.params["detection_topic"]), 10)
+        self.detected_pub = self.create_publisher(Bool, str(self.params["detected_topic"]), 10)
+        self.status_pub = self.create_publisher(String, str(self.params["status_topic"]), 10)
         self.rgb_overlay_pub = self.create_publisher(Image, str(self.params["rgb_overlay_topic"]), 10)
         self.depth_overlay_pub = self.create_publisher(Image, str(self.params["depth_overlay_topic"]), 10)
         self.weld_seam_pose_pub = None
@@ -2068,6 +2070,8 @@ class AceaPipeJunctionNode(Node):
             "depth_topic": "/camera/depth",
             "camera_info_topic": "/camera/camera_info",
             "detection_topic": "/acea/pipe_junction/detection",
+            "detected_topic": "/acea/pipe_junction/detected",
+            "status_topic": "/acea/pipe_junction/status",
             "rgb_overlay_topic": "/acea/pipe_junction/debug/rgb_overlay",
             "depth_overlay_topic": "/acea/pipe_junction/debug/depth_overlay",
             "publish_weld_gap_geometry": True,
@@ -2078,6 +2082,7 @@ class AceaPipeJunctionNode(Node):
             "weld_marker_cylinder_length_m": 0.6,
             "weld_marker_plane_scale": 1.3,
             "sync_slop_s": 0.08,
+            "use_receive_time_for_sync": False,
             "allow_stale_camera_info": True,
             "queue_size": 10,
             "publish_waiting_status": True,
@@ -2227,6 +2232,8 @@ class AceaPipeJunctionNode(Node):
         self._try_process()
 
     def _message_time(self, msg: Image | CameraInfo) -> float:
+        if bool(self.params.get("use_receive_time_for_sync", False)):
+            return 1e-9 * float(self.get_clock().now().nanoseconds)
         stamp = _stamp_sec(msg)
         if stamp > 0.0:
             return stamp
@@ -2545,6 +2552,29 @@ class AceaPipeJunctionNode(Node):
         if marker_array is not None and self.weld_marker_pub is not None:
             self.weld_marker_pub.publish(marker_array)
 
+    def _publish_debug_status(self, status: dict[str, Any]) -> None:
+        accepted = bool(status.get("detector_accepted", status.get("accepted", False)))
+        compact = {
+            "state": status.get("state"),
+            "detected": accepted,
+            "detector_accepted": accepted,
+            "reason": status.get("reason"),
+            "confidence": status.get("confidence"),
+            "candidate_x_strip_px": status.get("candidate_x_strip_px"),
+            "candidate_x_image_px": status.get("candidate_x_image_px"),
+            "rgb_dark_accepted": status.get("rgb_dark_accepted"),
+            "depth_gap_accepted": status.get("depth_gap_accepted"),
+            "gap_plane_available": bool(status.get("gap_plane_available", False)),
+            "weld_seam_pose_available": bool(status.get("weld_seam_pose_available", False)),
+            "frame_id": status.get("frame_id"),
+            "processed_frame_count": status.get("processed_frame_count"),
+            "rgb_queue": status.get("rgb_queue"),
+            "depth_queue": status.get("depth_queue"),
+            "camera_info_queue": status.get("camera_info_queue"),
+        }
+        self.detected_pub.publish(Bool(data=accepted))
+        self.status_pub.publish(String(data=json.dumps(compact, sort_keys=True, allow_nan=False)))
+
     def _publish(self, status: dict[str, Any], rgb_overlay: np.ndarray, depth_overlay: np.ndarray, header: Any) -> None:
         gap_payload, pose_msg, marker_array = self._build_weld_gap_geometry(status, header)
         if gap_payload is not None:
@@ -2566,6 +2596,7 @@ class AceaPipeJunctionNode(Node):
                 }
             )
         self.detection_pub.publish(String(data=json.dumps(status, sort_keys=True, allow_nan=False)))
+        self._publish_debug_status(status)
         self.last_status_publish_time = self._now_sec()
         self._publish_weld_gap_geometry(gap_payload, pose_msg, marker_array)
         self.rgb_overlay_pub.publish(self._rgb_array_to_msg(rgb_overlay, header))
@@ -2612,6 +2643,7 @@ class AceaPipeJunctionNode(Node):
             "allow_nominal_intrinsics_fallback": bool(self.params["allow_nominal_intrinsics_fallback"]),
         }
         self.detection_pub.publish(String(data=json.dumps(status, sort_keys=True, allow_nan=False)))
+        self._publish_debug_status(status)
         self.last_status_publish_time = now
 
     def _now_sec(self) -> float:

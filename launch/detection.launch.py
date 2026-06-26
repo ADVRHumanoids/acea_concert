@@ -43,6 +43,16 @@ def generate_launch_description() -> LaunchDescription:
             description="Enable the YOLO-seg detector frontend (needs the YOLO venv).",
         ),
         DeclareLaunchArgument(
+            "junction_acceptance_mode",
+            default_value="rgb_depth",
+            description="Detector acceptance mode: rgb_depth, rgb_temporal, or variant_a_rgb.",
+        ),
+        DeclareLaunchArgument(
+            "use_depth_gap_gate",
+            default_value="true",
+            description="Use the thin depth-gap gate for junction acceptance when supported by the selected mode.",
+        ),
+        DeclareLaunchArgument(
             "rgb_topic",
             default_value="/D435i_camera_front/color/image_raw",
             description="RGB image topic override.",
@@ -66,6 +76,8 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[
                 LaunchConfiguration("detector_config"),
                 {"use_yolo_seg_frontend": LaunchConfiguration("use_yolo_seg_frontend")},
+                {"junction_acceptance_mode": LaunchConfiguration("junction_acceptance_mode")},
+                {"use_depth_gap_gate": LaunchConfiguration("use_depth_gap_gate")},
                 {"rgb_topic": LaunchConfiguration("rgb_topic")},
                 {"depth_topic": LaunchConfiguration("depth_topic")},
                 {"camera_info_topic": LaunchConfiguration("camera_info_topic")},

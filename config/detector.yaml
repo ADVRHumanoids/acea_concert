@@ -12,12 +12,16 @@
     depth_topic: /D435i_camera_front/depth_image
     camera_info_topic: /D435i_camera_front/camera_info
     detection_topic: /acea/pipe_junction/detection
+    detected_topic: /acea/pipe_junction/detected
+    status_topic: /acea/pipe_junction/status
 
-    sync_slop_s: 0.3
+    sync_slop_s: 1.0
+    use_receive_time_for_sync: true
     junction_acceptance_mode: rgb_depth
     use_depth_gap_gate: true
     use_yolo_seg_frontend: false
     allow_nominal_intrinsics_fallback: true
+    variant_a_min_vertical_run_px: 8
 
     # Weld-seam gap geometry: point = depth-backprojected seam surface,
     # normal = pipe axis. Published in the camera frame; gap_pose_robot_node

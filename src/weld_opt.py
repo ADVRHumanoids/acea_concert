@@ -119,12 +119,17 @@ if weld_trajectory_radius <= 0.0:
     )
 
 trajectory_scenario_name = 'manual'
+<<<<<<< HEAD
 # angle_weld_start = np.pi
 # angle_weld_end = 2 * np.pi
 
 angle_weld_start = 1/2 * np.pi
 angle_weld_end = np.pi
 
+=======
+angle_weld_start = 1 / 2 * np.pi
+angle_weld_end = np.pi
+>>>>>>> Add perception gap pose pipeline for weld simulation
 weld_upside_down = False
 
 trajectory_scenario_name = os.environ.get(

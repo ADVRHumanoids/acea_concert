@@ -92,14 +92,15 @@ PIPE_SDF_TEMPLATE = """<?xml version="1.0" ?>
 </sdf>"""
 GAP_MARKER_SDF_TEMPLATE = """<?xml version="1.0" ?>
 <sdf version="1.6">
-  <model name="weld_gap_visual_marker">
+  <model name="weld_gap_black_filler">
     <static>true</static>
-    <link name="gap_marker_link">
-      <visual name="gap_marker_visual">
+    <link name="gap_black_filler_link">
+      <visual name="gap_black_filler_visual">
         <geometry>
-          <box>
-            <size>{depth_x} {width_y} {height_z}</size>
-          </box>
+          <cylinder>
+            <radius>{radius}</radius>
+            <length>{length}</length>
+          </cylinder>
         </geometry>
         <material>
           <ambient>0.0 0.0 0.0 1</ambient>
@@ -131,6 +132,27 @@ BLACK_BACKDROP_SDF_TEMPLATE = """<?xml version="1.0" ?>
     </link>
   </model>
 </sdf>"""
+GAP_FRONT_STRIPE_SDF_TEMPLATE = """<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="weld_gap_front_black_stripe">
+    <static>true</static>
+    <link name="gap_front_black_stripe_link">
+      <visual name="gap_front_black_stripe_visual">
+        <geometry>
+          <box>
+            <size>{thickness_x} {width_y} {height_z}</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.0 0.0 0.0 1</ambient>
+          <diffuse>0.0 0.0 0.0 1</diffuse>
+          <specular>0.0 0.0 0.0 1</specular>
+          <emissive>0.0 0.0 0.0 1</emissive>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>"""
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -149,10 +171,12 @@ def _spawn_pipe_actions(context, *args, **kwargs):
     pipe_radius = _float_launch_config(context, "pipe_radius_m")
     pipe_total_length = _float_launch_config(context, "pipe_total_length_m")
     pipe_gap = _float_launch_config(context, "pipe_gap_m")
+    pipe_z = _float_launch_config(context, "pipe_z_m")
     gap_marker_width = _float_launch_config(context, "gap_visual_marker_width_m")
     if gap_marker_width <= 0.0:
         gap_marker_width = pipe_gap
     spawn_gap_marker = _bool_launch_config(context, "spawn_gap_visual_marker")
+    spawn_gap_front_stripe = _bool_launch_config(context, "spawn_gap_front_visual_stripe")
     spawn_black_backdrop = _bool_launch_config(context, "spawn_gap_black_backdrop")
     backdrop_offset = _float_launch_config(context, "gap_black_backdrop_offset_m")
     backdrop_length = _float_launch_config(context, "gap_black_backdrop_length_m")
@@ -170,16 +194,18 @@ def _spawn_pipe_actions(context, *args, **kwargs):
         length=pipe_half_length,
     )
     gap_marker_sdf = GAP_MARKER_SDF_TEMPLATE.format(
-        # Put the debug marker on the camera-facing pipe surface, not through the
-        # whole pipe volume. Otherwise the pipe meshes can hide it in the RGB view.
-        depth_x=0.012,
-        width_y=max(0.002, gap_marker_width),
-        height_z=2.2 * pipe_radius,
+        radius=pipe_radius + 0.001,
+        length=max(0.002, gap_marker_width),
     )
     black_backdrop_sdf = BLACK_BACKDROP_SDF_TEMPLATE.format(
         thickness_x=0.025,
         length_y=max(pipe_total_length + 1.0, backdrop_length),
         height_z=max(3.0 * pipe_radius, backdrop_height),
+    )
+    gap_front_stripe_sdf = GAP_FRONT_STRIPE_SDF_TEMPLATE.format(
+        thickness_x=0.018,
+        width_y=max(0.006, gap_marker_width),
+        height_z=max(2.4 * pipe_radius, 0.20),
     )
 
     # The sim robot is spawned at world XY = 0. Express the optimized pipe
@@ -214,7 +240,7 @@ def _spawn_pipe_actions(context, *args, **kwargs):
                         "-string", pipe_sdf_left,
                         "-x", f"{pipe_spawn_x + pipe_offset_x:.6f}",
                         "-y", f"{pipe_spawn_y + pipe_offset_y:.6f}",
-                        "-z", str(PIPE_Z),
+                        "-z", f"{pipe_z:.6f}",
                         "-R", "1.5708",
                         "-P", "0.0",
                         "-Y", f"{pipe_y_axis_yaw:.6f}",
@@ -234,7 +260,7 @@ def _spawn_pipe_actions(context, *args, **kwargs):
                         "-string", pipe_sdf_right,
                         "-x", f"{pipe_spawn_x - pipe_offset_x:.6f}",
                         "-y", f"{pipe_spawn_y - pipe_offset_y:.6f}",
-                        "-z", str(PIPE_Z),
+                        "-z", f"{pipe_z:.6f}",
                         "-R", "1.5708",
                         "-P", "0.0",
                         "-Y", f"{pipe_y_axis_yaw:.6f}",
@@ -257,7 +283,7 @@ def _spawn_pipe_actions(context, *args, **kwargs):
                             "-string", black_backdrop_sdf,
                             "-x", f"{pipe_spawn_x + (pipe_radius + backdrop_offset) * pipe_back_axis[0]:.6f}",
                             "-y", f"{pipe_spawn_y + (pipe_radius + backdrop_offset) * pipe_back_axis[1]:.6f}",
-                            "-z", str(PIPE_Z),
+                            "-z", f"{pipe_z:.6f}",
                             "-R", "0.0",
                             "-P", "0.0",
                             "-Y", f"{pipe_y_axis_yaw:.6f}",
@@ -278,9 +304,32 @@ def _spawn_pipe_actions(context, *args, **kwargs):
                         name="spawn_weld_gap_visual_marker",
                         arguments=[
                             "-string", gap_marker_sdf,
-                            "-x", f"{pipe_spawn_x - pipe_radius - 0.006:.6f}",
+                            "-x", f"{pipe_spawn_x:.6f}",
                             "-y", f"{pipe_spawn_y:.6f}",
-                            "-z", str(PIPE_Z),
+                            "-z", f"{pipe_z:.6f}",
+                            "-R", "1.5708",
+                            "-P", "0.0",
+                            "-Y", f"{pipe_y_axis_yaw:.6f}",
+                        ],
+                        output="screen",
+                    ),
+                ],
+            )
+        )
+    if spawn_gap_front_stripe:
+        actions.append(
+            TimerAction(
+                period=2.15,
+                actions=[
+                    Node(
+                        package="ros_gz_sim",
+                        executable="create",
+                        name="spawn_weld_gap_front_black_stripe",
+                        arguments=[
+                            "-string", gap_front_stripe_sdf,
+                            "-x", f"{pipe_spawn_x - (pipe_radius + 0.006) * pipe_back_axis[0]:.6f}",
+                            "-y", f"{pipe_spawn_y - (pipe_radius + 0.006) * pipe_back_axis[1]:.6f}",
+                            "-z", f"{pipe_z:.6f}",
                             "-R", "0.0",
                             "-P", "0.0",
                             "-Y", f"{pipe_y_axis_yaw:.6f}",
@@ -308,9 +357,9 @@ def generate_launch_description():
     # before invoking gz sim. Passing the world file with `-s` keeps this
     # package runnable in headless Docker without modifying concert_gazebo.
     gazebo_world_file = os.path.join(
-        get_package_share_directory("concert_gazebo"),
+        get_package_share_directory("acea_concert"),
         "world",
-        "empty_world.sdf",
+        "empty_world_no_ros2_camera_system.sdf",
     )
     gazebo_world_file_with_headless_flag = PythonExpression([
         "'",
@@ -341,6 +390,35 @@ def generate_launch_description():
             {"use_sim_time": True},
         ],
     )
+    front_camera_bridge_condition = IfCondition(PythonExpression([
+        "'",
+        LaunchConfiguration("realsense"),
+        "' == 'true' and '",
+        LaunchConfiguration("start_front_camera_bridges"),
+        "' == 'true'",
+    ]))
+    front_color_bridge_node = Node(
+        condition=front_camera_bridge_condition,
+        package="ros_gz_image",
+        executable="image_bridge",
+        name="d435i_front_color_bridge",
+        arguments=["/D435i_camera_front/image"],
+        remappings=[
+            ("/D435i_camera_front/image", "/D435i_camera_front/color/image_raw"),
+        ],
+        output="screen",
+    )
+    front_depth_info_bridge_node = Node(
+        condition=front_camera_bridge_condition,
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="d435i_front_depth_info_bridge",
+        arguments=[
+            "/D435i_camera_front/depth_image@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/D435i_camera_front/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+        ],
+        output="screen",
+    )
 
     return LaunchDescription([
         gz_resource_env,
@@ -351,6 +429,8 @@ def generate_launch_description():
         DeclareLaunchArgument("rviz",      default_value="false", description="Launch RViz"),
         DeclareLaunchArgument("realsense", default_value="true", description="Include RealSense"),
         DeclareLaunchArgument("velodyne",  default_value="false", description="Include Velodyne"),
+        DeclareLaunchArgument("start_front_camera_bridges", default_value="true",
+                              description="Start explicit GZ->ROS bridges for the front D435i RGB/depth/camera_info topics"),
         DeclareLaunchArgument("publish_robot_state_tf", default_value="true",
                               description="Publish URDF fixed transforms, including base_link -> D435i camera frames"),
         DeclareLaunchArgument("pipe_radius_m", default_value=str(PIPE_RADIUS),
@@ -359,10 +439,14 @@ def generate_launch_description():
                               description="Total pipe length before splitting around the gap [m]"),
         DeclareLaunchArgument("pipe_gap_m", default_value=str(PIPE_GAP),
                               description="Visible gap between the two spawned pipe halves [m]"),
+        DeclareLaunchArgument("pipe_z_m", default_value=str(PIPE_Z),
+                              description="Pipe/gap center height used for the spawned debug pipe [m]"),
         DeclareLaunchArgument("spawn_gap_visual_marker", default_value="true",
-                              description="Spawn a thin dark visual marker on the pipe surface for RGB detector smoke tests"),
+                              description="Spawn a short black cylindrical mini-pipe inside the junction for RGB detector smoke tests"),
         DeclareLaunchArgument("gap_visual_marker_width_m", default_value="-1.0",
-                              description="Thickness of the dark visual gap marker along the pipe axis [m]; <=0 follows pipe_gap_m"),
+                              description="Length of the black junction filler along the pipe axis [m]; <=0 follows pipe_gap_m"),
+        DeclareLaunchArgument("spawn_gap_front_visual_stripe", default_value="false",
+                              description="Optional debug-only front-facing black stripe on the visible pipe surface"),
         DeclareLaunchArgument("spawn_gap_black_backdrop", default_value="false",
                               description="Spawn a large black panel behind the pipe so the real gap appears dark in RGB"),
         DeclareLaunchArgument("gap_black_backdrop_offset_m", default_value="0.35",
@@ -379,6 +463,8 @@ def generate_launch_description():
                               description="Yaw of the pipe/gap Y axis from nominal +Y around world Z [rad]"),
 
         robot_state_publisher_node,
+        front_color_bridge_node,
+        front_depth_info_bridge_node,
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(

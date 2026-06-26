@@ -53,6 +53,17 @@ cd /home/user/concert_ws/src/acea_concert
 python3 src/weld_opt.py
 ```
 
+For the current ACEA welding-sector test, `src/weld_opt.py` is configured with:
+
+```python
+angle_weld_start = 1 / 2 * np.pi
+angle_weld_end = np.pi
+weld_upside_down = False
+```
+
+Run this optimization before launching the full welding simulation/controller so
+`mat_files/weld_concert.mat` matches the expected sector.
+
 `src/weld_opt.py` solves the Horizon optimization problem and saves:
 
 ```text
@@ -206,6 +217,21 @@ ros2 launch acea_concert detection.launch.py \
   camera_info_topic:=/D435i_camera_front/camera_info
 ```
 
+For the current short black cylindrical filler smoke test, use the deterministic
+RGB-only Variant A frontend:
+
+```bash
+ros2 launch acea_concert detection.launch.py \
+  junction_acceptance_mode:=variant_a_rgb \
+  use_depth_gap_gate:=false
+```
+
+Important: `config/detector.yaml` currently sets
+`variant_a_min_vertical_run_px: 8`. This is intentionally permissive for the
+short junction filler in the Gazebo smoke test. Before treating it as a robust
+real/deployment setting, rerun no-gap and hard-negative checks because short
+dark marks could otherwise become false positives.
+
 For a real wrist camera, remap these three topics to the camera driver topics.
 For example:
 
@@ -220,9 +246,32 @@ The detector publishes the gap geometry only after an accepted detection. The
 main debug topics are:
 
 ```bash
+ros2 topic echo /acea/pipe_junction/detected
+ros2 topic echo /acea/pipe_junction/status --field data
 ros2 topic echo /acea/pipe_junction/detection --field data
 ros2 topic echo /acea/weld_seam/gap_plane --field data
 ros2 topic echo /gap/pose_robot
+```
+
+Debug image topics:
+
+```bash
+ros2 topic hz /acea/pipe_junction/debug/rgb_overlay
+ros2 topic hz /acea/pipe_junction/debug/depth_overlay
+```
+
+`/acea/pipe_junction/debug/rgb_overlay` contains the camera image with the
+detector overlay: the scan/search line is yellow/orange while searching, and the
+accepted junction line is cyan when accepted. Use this topic in RViz/Image View
+or with any ROS image viewer when visual debugging is needed.
+
+Fast failure isolation:
+
+```text
+/acea/pipe_junction/status        empty or WAITING_FOR_* -> camera/sync problem
+/acea/pipe_junction/detected      false                  -> detector has not accepted the gap
+/acea/weld_seam/gap_plane         empty                  -> no accepted camera-frame gap geometry
+/gap/pose_robot                   empty                  -> gap plane missing or camera->base_link TF missing
 ```
 
 Expected successful detection:
@@ -233,6 +282,13 @@ Expected successful detection:
   detector_accepted = true
   gap_plane_available = true
   weld_seam_pose_available = true
+
+/acea/pipe_junction/detected:
+  data = true
+
+/acea/pipe_junction/status:
+  detected = true
+  state = STOP_AND_LOCALIZE
 
 /acea/weld_seam/gap_plane:
   valid = true
@@ -298,12 +354,39 @@ source /opt/ros/jazzy/setup.bash
 source /home/user/concert_ws/install/setup.bash
 
 ros2 topic echo /acea/pipe_junction/detection --field data
+ros2 topic echo /acea/pipe_junction/status --field data
+ros2 topic echo /acea/pipe_junction/detected
 ros2 topic echo /acea/weld_seam/gap_plane --field data
 ros2 topic echo /gap/pose_robot
 ```
 
 For the default 1 cm marker scene, the expected result is a valid detection and
 a `/gap/pose_robot` message in `base_link`.
+
+If `/gap/pose_robot` is empty, debug in this order:
+
+1. Check camera topics:
+   ```bash
+   ros2 topic hz /D435i_camera_front/color/image_raw
+   ros2 topic hz /D435i_camera_front/depth_image
+   ros2 topic hz /D435i_camera_front/camera_info
+   ```
+2. Check detector status:
+   ```bash
+   ros2 topic echo /acea/pipe_junction/status --field data --once
+   ros2 topic echo /acea/pipe_junction/detected --once
+   ```
+3. Check camera-frame gap geometry:
+   ```bash
+   ros2 topic echo /acea/weld_seam/gap_plane --field data --once
+   ```
+4. Check the robot camera TF:
+   ```bash
+   ros2 run tf2_ros tf2_echo base_link D435i_camera_front_depth_optical_frame
+   ```
+
+Do not run `src/gap_pose_publisher.py` together with `detection.launch.py`, as
+both publish `/gap/pose_robot`.
 
 ### Gravity Compensation
 

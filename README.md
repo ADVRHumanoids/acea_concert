@@ -142,6 +142,11 @@ To use a different optimization result, pass `mat_file`. To start with the gap a
 ros2 launch acea_concert weld_sim.launch.py mat_file:=mat_files/weld_concert.mat optimized_robot_pose:=true
 ```
 
+The short black cylindrical filler is preferred over the flat stripe for the
+current simulation smoke test because it fills the actual junction volume. The
+flat stripe is only a visual/debug aid and can interfere with manipulation tests
+that rely on the pipe geometry.
+
 ### XBot GUI
 
 Start the XBot GUI after the simulation is running.
@@ -323,9 +328,14 @@ for the wrist camera.
 
 ### Perception Smoke Test In Simulation
 
-Terminal 1:
+This is the current end-to-end command sequence for checking the simulated
+front D435i camera, detector overlay, camera-frame gap plane, and final
+`/gap/pose_robot` output.
+
+Terminal 1, start Gazebo and the front camera bridges:
 
 ```bash
+cd /home/user/concert_ws
 source /opt/ros/jazzy/setup.bash
 source /opt/xbot/setup.sh 2>/dev/null || true
 source /home/user/concert_ws/install/setup.bash
@@ -333,35 +343,79 @@ export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.js
 export __GLX_VENDOR_LIBRARY_NAME=nvidia
 
 ros2 launch acea_concert weld_sim.launch.py \
-  gui:=false \
+  gui:=true \
   xbot2:=false \
-  rviz:=false
+  rviz:=false \
+  realsense:=true \
+  publish_robot_state_tf:=true \
+  start_front_camera_bridges:=true \
+  pipe_gap_m:=0.01 \
+  pipe_z_m:=0.75 \
+  spawn_gap_visual_marker:=true \
+  spawn_gap_front_visual_stripe:=false
 ```
 
-Terminal 2:
+Terminal 2, start the perception replacement:
 
 ```bash
+cd /home/user/concert_ws
 source /opt/ros/jazzy/setup.bash
 source /home/user/concert_ws/install/setup.bash
 
-ros2 launch acea_concert detection.launch.py
+ros2 launch acea_concert detection.launch.py \
+  junction_acceptance_mode:=variant_a_rgb \
+  use_depth_gap_gate:=false
 ```
 
-Terminal 3:
+Terminal 3, inspect the state and outputs:
 
 ```bash
+cd /home/user/concert_ws
 source /opt/ros/jazzy/setup.bash
 source /home/user/concert_ws/install/setup.bash
 
-ros2 topic echo /acea/pipe_junction/detection --field data
 ros2 topic echo /acea/pipe_junction/status --field data
 ros2 topic echo /acea/pipe_junction/detected
 ros2 topic echo /acea/weld_seam/gap_plane --field data
 ros2 topic echo /gap/pose_robot
 ```
 
+Useful one-shot checks:
+
+```bash
+ros2 topic hz /D435i_camera_front/color/image_raw
+ros2 topic hz /D435i_camera_front/depth_image
+ros2 topic echo /acea/pipe_junction/status --field data --once
+ros2 topic echo /acea/weld_seam/gap_plane --field data --once
+ros2 topic echo /gap/pose_robot --once
+ros2 run tf2_ros tf2_echo base_link D435i_camera_front_depth_optical_frame
+```
+
+To see what the detector is doing, open `rqt_image_view` and select:
+
+```text
+/acea/pipe_junction/debug/rgb_overlay
+```
+
+The overlay shows the scan/search line while searching and the accepted
+junction line when the detector accepts the gap.
+
 For the default 1 cm marker scene, the expected result is a valid detection and
 a `/gap/pose_robot` message in `base_link`.
+
+Expected successful status:
+
+```text
+/acea/pipe_junction/status:
+  detected = true
+  detector_accepted = true
+  state = STOP_AND_LOCALIZE
+  gap_plane_available = true
+  weld_seam_pose_available = true
+
+/gap/pose_robot:
+  header.frame_id = base_link
+```
 
 If `/gap/pose_robot` is empty, debug in this order:
 
@@ -387,6 +441,12 @@ If `/gap/pose_robot` is empty, debug in this order:
 
 Do not run `src/gap_pose_publisher.py` together with `detection.launch.py`, as
 both publish `/gap/pose_robot`.
+
+Current validation note: the perception chain publishes
+`/acea/weld_seam/gap_plane` and `/gap/pose_robot`, but the numerical comparison
+against the simulator ground-truth gap pose is still under debugging. Treat this
+as a perception integration smoke test until the frame/ground-truth comparison
+is closed.
 
 ### Gravity Compensation
 

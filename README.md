@@ -443,10 +443,86 @@ Do not run `src/gap_pose_publisher.py` together with `detection.launch.py`, as
 both publish `/gap/pose_robot`.
 
 Current validation note: the perception chain publishes
-`/acea/weld_seam/gap_plane` and `/gap/pose_robot`, but the numerical comparison
-against the simulator ground-truth gap pose is still under debugging. Treat this
-as a perception integration smoke test until the frame/ground-truth comparison
-is closed.
+`/acea/weld_seam/gap_plane` and `/gap/pose_robot` correctly, and the bridge
+camera->base_link transform is exact. The remaining error vs the simulator
+ground truth is a ~0.88 m vertical (Z) offset caused by the front-camera mount
+height in the `robot_state_publisher` TF (not by the detector or the bridge). See
+"Run Exactly One Detector" and "Compare Perception Against Ground Truth" below.
+
+### Run Exactly One Detector (No Duplicates)
+
+The single most common failure is **two detectors (or two bridges) running at
+once** — usually an orphaned previous `detection.launch.py` left alive next to a
+new one. Both publish to the same topics, so `ros2 topic echo` interleaves two
+sources: `processed_frame_count` *alternates* (e.g. 2106 <-> 3179), the state
+flips between `SCAN` and `STOP_AND_LOCALIZE`, and config edits look ignored
+because the old instance is still using the old parameters.
+
+Always stop any previous run before relaunching:
+
+```bash
+pkill -f acea_pipe_junction_node ; pkill -f gap_pose_robot_node
+```
+
+Then confirm exactly one of each is live:
+
+```bash
+ros2 node list | grep -c acea_pipe_junction_node      # must print 1
+ros2 topic info /acea/pipe_junction/status            # Publisher count: 1
+ros2 topic info /gap/pose_robot                       # Publisher count: 1
+```
+
+After a rebuild you MUST restart the detector: a still-running node keeps its old
+in-memory parameters. This is why a stale node can sit forever in
+`waiting_for_rgb_depth_sync` even though RGB+depth+camera_info all publish at
+~30 Hz, while a freshly started node loads `use_receive_time_for_sync: true` /
+`sync_slop_s: 1.0` and syncs immediately (`rgb_depth_dt_s ~= 0.0005`).
+
+The detector and bridge now self-protect against this:
+
+- a second instance on the same host refuses to start (file-lock guard) with a
+  clear message; override with `-p allow_duplicate:=true`;
+- every status message carries `node_instance` (`host:pid`), so two publishers
+  are obvious in `ros2 topic echo`;
+- if RGB and depth both flow but never sync on header stamps, the detector
+  switches to receive-time sync automatically (`auto_receive_time_fallback`);
+- `WAITING_FOR_SYNC` status now reports `rgb_hz`, `depth_hz`, `camera_info_hz`,
+  `*_age_s`, `sync_time_source`, and a human `hint`.
+
+### Compare Perception Against Ground Truth
+
+Both `gap_pose_publisher.py` (ground truth) and the perception bridge publish
+`/gap/pose_robot`, so never run them on the same topic. To compare, remap the
+ground truth onto a separate topic while perception keeps `/gap/pose_robot`:
+
+```bash
+# perception already running via detection.launch.py -> /gap/pose_robot
+ros2 run acea_concert gap_pose_publisher.py --ros-args -r /gap/pose_robot:=/gap/pose_robot_gt
+ros2 topic echo --once /gap/pose_robot_gt     # ground truth (base_link)
+ros2 topic echo --once /gap/pose_robot        # perception   (base_link)
+```
+
+Measured result with a clean single detector:
+
+```text
+ground truth : x=2.000  y=0.146  z= 0.003
+perception   : x=2.135  y=0.139  z=-0.875
+```
+
+x and y match (~13 cm / 8 mm); the error is ~pure **Z (-0.88 m)**. The bridge
+transform is exact (`R * center_cam + t` reproduces the published pose), so this
+is NOT a detector/bridge bug: the `robot_state_publisher` TF places
+`D435i_camera_front` ~0.066 m below `base_link`, while the real front camera
+sits ~0.88 m higher, so the perceived gap lands ~0.88 m too low (below the
+floor). Fix the front-camera mount height in the robot description so the
+`base_link -> D435i_camera_front_*` TF matches the Gazebo model, or override it
+with the bridge static extrinsic (`static_cam_to_base_*`; the camera is static
+relative to `base_link`). Inspect the current TF with:
+
+```bash
+ros2 run tf2_ros tf2_echo base_link D435i_camera_front_depth_optical_frame
+# today: translation ~[0.406, 0.018, -0.066] -> camera modeled ~0.88 m too low
+```
 
 ### Gravity Compensation
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import socket
 import sys
 from collections import deque
 from dataclasses import dataclass
@@ -91,6 +92,34 @@ try:
 except Exception:  # pragma: no cover - Variant A is optional
     _variant_a_detect_seam = None
 
+# Shared operational guards: single-instance lock (kills the "two detectors
+# publishing alternating frame counts" failure) + a host:pid instance id stamped
+# into status so duplicates are obvious in `ros2 topic echo`. ROS-free helper, so
+# it imports in the offline path too; fall back to no-ops if it is ever missing.
+try:
+    from acea_detection_runtime import (
+        DuplicateInstanceError,
+        SingleInstanceLock,
+        count_named_nodes,
+        instance_id,
+    )
+except Exception:  # pragma: no cover - degrade gracefully if helper is absent
+    class DuplicateInstanceError(RuntimeError):  # type: ignore
+        pass
+
+    class SingleInstanceLock:  # type: ignore
+        def __init__(self, *_a: Any, **_k: Any) -> None:
+            self.acquired = True
+            self.holder = ""
+
+        def release(self) -> None: ...
+
+    def count_named_nodes(_node: Any) -> int:  # type: ignore
+        return 1
+
+    def instance_id() -> str:  # type: ignore
+        return f"{socket.gethostname()}:{os.getpid()}"
+
 # Weld-seam / gap-plane frame geometry (pure NumPy, ROS-free, unit-tested in
 # acea_alignment/weld_seam.py). Turns (pipe axis, seam surface point) into a
 # PoseStamped-ready frame for the IK / welding-tracking side (Arturo's request).
@@ -106,6 +135,11 @@ except Exception:  # pragma: no cover - geometry helper is optional at import ti
 _MARKER_ADD = 0
 _MARKER_DELETEALL = 3
 _MARKER_CYLINDER = 3
+
+# Fixed name for the single-instance lock (independent of the runtime ROS node
+# name, which the launch file may remap). All copies of this detector contend
+# for the same lock on a host.
+_DETECTOR_LOCK_NAME = "acea_pipe_junction_node"
 
 
 def _stamp_sec(msg: Image | CameraInfo) -> float:
@@ -2016,6 +2050,26 @@ class AceaPipeJunctionNode(Node):
     def __init__(self) -> None:
         super().__init__("acea_pipe_junction_detector")
         self.params = self._declare_params()
+        self.instance_id = instance_id()
+
+        # Refuse to start a second detector on the same host: two of them publish
+        # CONFLICTING detections to the same topics (the alternating
+        # processed_frame_count symptom). Override with allow_duplicate:=true.
+        self._single_instance: SingleInstanceLock | None = None
+        if rclpy is not None:
+            self._single_instance = SingleInstanceLock(_DETECTOR_LOCK_NAME)
+            if not self._single_instance.acquired and not bool(self.params.get("allow_duplicate", False)):
+                raise DuplicateInstanceError(
+                    f"another '{_DETECTOR_LOCK_NAME}' is already running on this host "
+                    f"(holder {self._single_instance.holder or 'unknown'}). Two detectors "
+                    "publish conflicting results to the same topics — you get alternating "
+                    "processed_frame_count and contradictory state (one SCAN, one "
+                    "STOP_AND_LOCALIZE), and config edits look ignored because the old "
+                    f"instance is still alive. Stop it first:  pkill -f {_DETECTOR_LOCK_NAME} "
+                    "  (or close its terminal/launch), then start exactly one. To run two "
+                    "on purpose, pass -p allow_duplicate:=true."
+                )
+
         self.detector = OnlinePipeJunctionDetector(self.params)
         self.rgb_queue: deque[tuple[float, Image]] = deque(maxlen=int(self.params["queue_size"]))
         self.depth_queue: deque[tuple[float, Image]] = deque(maxlen=int(self.params["queue_size"]))
@@ -2023,6 +2077,14 @@ class AceaPipeJunctionNode(Node):
         self.received_count = 0
         self.last_processed_rgb_time: float | None = None
         self.last_status_publish_time = 0.0
+
+        # Per-stream arrival timestamps (node clock) for sync diagnostics + the
+        # auto receive-time fallback. Effective sync clock can flip at runtime.
+        self._rgb_recv: deque[float] = deque(maxlen=30)
+        self._depth_recv: deque[float] = deque(maxlen=30)
+        self._info_recv: deque[float] = deque(maxlen=30)
+        self._effective_use_receive_time = bool(self.params.get("use_receive_time_for_sync", False))
+        self._receive_time_fallback_logged = False
 
         qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -2059,8 +2121,12 @@ class AceaPipeJunctionNode(Node):
             )
         if bool(self.params["publish_waiting_status"]):
             self.create_timer(float(self.params["waiting_status_period_s"]), self._publish_waiting_status)
+        # Periodic monitor for duplicates the file lock cannot see (another
+        # container / host on the same DDS graph publishing the same topics).
+        if rclpy is not None:
+            self.create_timer(5.0, self._check_duplicate_graph)
         self.get_logger().info(
-            "ACEA pipe-junction detector listening to "
+            f"ACEA pipe-junction detector [{self.instance_id}] listening to "
             f"{self.params['rgb_topic']}, {self.params['depth_topic']}, {self.params['camera_info_topic']}"
         )
 
@@ -2083,6 +2149,13 @@ class AceaPipeJunctionNode(Node):
             "weld_marker_plane_scale": 1.3,
             "sync_slop_s": 0.08,
             "use_receive_time_for_sync": False,
+            # If RGB and depth both arrive but never sync on header stamps (zero
+            # stamps, or mixed sim/wall clock), automatically fall back to
+            # receive-time sync once and warn. Set use_receive_time_for_sync:=true
+            # to make it the default and silence the warning.
+            "auto_receive_time_fallback": True,
+            # Refuse to start if another detector is already running on this host.
+            "allow_duplicate": False,
             "allow_stale_camera_info": True,
             "queue_size": 10,
             "publish_waiting_status": True,
@@ -2220,19 +2293,22 @@ class AceaPipeJunctionNode(Node):
         return values
 
     def _rgb_cb(self, msg: Image) -> None:
+        self._rgb_recv.append(self._now_sec())
         self.rgb_queue.append((self._message_time(msg), msg))
         self._try_process()
 
     def _depth_cb(self, msg: Image) -> None:
+        self._depth_recv.append(self._now_sec())
         self.depth_queue.append((self._message_time(msg), msg))
         self._try_process()
 
     def _info_cb(self, msg: CameraInfo) -> None:
+        self._info_recv.append(self._now_sec())
         self.info_queue.append((self._message_time(msg), msg))
         self._try_process()
 
     def _message_time(self, msg: Image | CameraInfo) -> float:
-        if bool(self.params.get("use_receive_time_for_sync", False)):
+        if self._effective_use_receive_time:
             return 1e-9 * float(self.get_clock().now().nanoseconds)
         stamp = _stamp_sec(msg)
         if stamp > 0.0:
@@ -2278,6 +2354,7 @@ class AceaPipeJunctionNode(Node):
                 {
                     "stamp": {"sec": int(rgb_msg.header.stamp.sec), "nanosec": int(rgb_msg.header.stamp.nanosec)},
                     "frame_id": rgb_msg.header.frame_id,
+                    "node_instance": self.instance_id,
                     "rgb_depth_dt_s": _round(depth_time - rgb_time),
                     "rgb_info_dt_s": _round(info_time - rgb_time),
                     "camera_intrinsics_source": intrinsics_source,
@@ -2558,6 +2635,7 @@ class AceaPipeJunctionNode(Node):
             "state": status.get("state"),
             "detected": accepted,
             "detector_accepted": accepted,
+            "node_instance": self.instance_id,
             "reason": status.get("reason"),
             "confidence": status.get("confidence"),
             "candidate_x_strip_px": status.get("candidate_x_strip_px"),
@@ -2614,6 +2692,10 @@ class AceaPipeJunctionNode(Node):
         info_dt = None if info_pair is None or rgb_time is None else info_pair[0] - rgb_time
         latest_camera_info_valid = self._camera_info_valid(self.info_queue[-1][1]) if self.info_queue else False
 
+        # Self-heal the worst sync failure: both streams flow but nothing ever
+        # syncs because the header stamps are unusable (zero, or sim vs wall).
+        self._maybe_engage_receive_time_fallback()
+
         if not self.rgb_queue:
             reason = "waiting_for_rgb"
         elif not self.depth_queue:
@@ -2630,9 +2712,18 @@ class AceaPipeJunctionNode(Node):
         status = {
             "state": "WAITING_FOR_SYNC",
             "reason": reason,
+            "hint": self._waiting_hint(reason),
+            "node_instance": self.instance_id,
             "rgb_queue": len(self.rgb_queue),
             "depth_queue": len(self.depth_queue),
             "camera_info_queue": len(self.info_queue),
+            "rgb_hz": _round(self._stream_hz(self._rgb_recv), 2),
+            "depth_hz": _round(self._stream_hz(self._depth_recv), 2),
+            "camera_info_hz": _round(self._stream_hz(self._info_recv), 2),
+            "rgb_age_s": _round(self._stream_age(self._rgb_recv), 2),
+            "depth_age_s": _round(self._stream_age(self._depth_recv), 2),
+            "camera_info_age_s": _round(self._stream_age(self._info_recv), 2),
+            "sync_time_source": "receive" if self._effective_use_receive_time else "header",
             "latest_camera_info_valid": latest_camera_info_valid,
             "processed_frame_count": self.detector.processed_frame_count,
             "received_synced_candidate_count": self.received_count,
@@ -2645,6 +2736,70 @@ class AceaPipeJunctionNode(Node):
         self.detection_pub.publish(String(data=json.dumps(status, sort_keys=True, allow_nan=False)))
         self._publish_debug_status(status)
         self.last_status_publish_time = now
+
+    def _stream_hz(self, recv: deque[float]) -> float | None:
+        if len(recv) < 2:
+            return None
+        span = recv[-1] - recv[0]
+        if span <= 0.0:
+            return None
+        return (len(recv) - 1) / span
+
+    def _stream_age(self, recv: deque[float]) -> float | None:
+        if not recv:
+            return None
+        return max(0.0, self._now_sec() - recv[-1])
+
+    def _waiting_hint(self, reason: str) -> str:
+        depth_age = self._stream_age(self._depth_recv)
+        if reason == "waiting_for_rgb":
+            return "no RGB frames arriving: check rgb_topic and that the camera/bridge publishes it."
+        if reason == "waiting_for_depth":
+            return ("no depth frames arriving: check depth_topic and the depth bridge "
+                    "(Gazebo depth sensor / RealSense aligned depth).")
+        if reason == "waiting_for_camera_info":
+            return "no CameraInfo yet: check camera_info_topic (nominal-intrinsics fallback may apply)."
+        if reason == "waiting_for_valid_camera_info":
+            return "CameraInfo received but its K matrix is zero/invalid."
+        if reason == "waiting_for_rgb_depth_sync":
+            if depth_age is not None and depth_age > 1.0:
+                return ("depth stream stalled or much slower than RGB; check the depth rate "
+                        "or raise sync_slop_s.")
+            return ("RGB and depth stamps differ by more than sync_slop_s; likely inconsistent "
+                    "clocks. receive-time fallback engages automatically if it persists.")
+        return "frames flowing; the next synced pair will be processed."
+
+    def _maybe_engage_receive_time_fallback(self) -> None:
+        if (
+            self._effective_use_receive_time
+            or not bool(self.params.get("auto_receive_time_fallback", True))
+            or self.received_count > 0
+            or len(self._rgb_recv) < 5
+            or len(self._depth_recv) < 5
+        ):
+            return
+        # Both streams are clearly flowing yet not a single pair has synced -> the
+        # header stamps are unusable. Switch to arrival-time sync and reset the
+        # queues so old (header-time) entries do not mix with new (receive-time).
+        self._effective_use_receive_time = True
+        self.rgb_queue.clear()
+        self.depth_queue.clear()
+        self.info_queue.clear()
+        if not self._receive_time_fallback_logged:
+            self._receive_time_fallback_logged = True
+            self.get_logger().warn(
+                "RGB and depth are both arriving but no pair synced on header stamps; "
+                "switching to receive-time sync (stamps look zero or mixed sim/wall clock). "
+                "Set use_receive_time_for_sync:=true to make this the default.")
+
+    def _check_duplicate_graph(self) -> None:
+        if count_named_nodes(self) > 1:
+            self.get_logger().error(
+                f"Multiple live nodes named '{self.get_name()}' on the ROS graph "
+                f"(this one: {self.instance_id}). They publish conflicting detections to "
+                "the same topics. A same-host copy is already blocked, so this is most "
+                "likely a second container/host — keep exactly one detector running.",
+                throttle_duration_sec=10.0)
 
     def _now_sec(self) -> float:
         return 1e-9 * float(self.get_clock().now().nanoseconds)
@@ -2703,13 +2858,21 @@ class AceaPipeJunctionNode(Node):
 
 def main(args: list[str] | None = None) -> None:
     rclpy.init(args=args)
-    node = AceaPipeJunctionNode()
+    node = None
     try:
+        node = AceaPipeJunctionNode()
         rclpy.spin(node)
+    except DuplicateInstanceError as exc:
+        # Half-constructed node may exist; use plain stderr (visible in launch log).
+        print(f"[acea_pipe_junction_node] refusing to start: {exc}", file=sys.stderr)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        node.destroy_node()
+        if node is not None:
+            lock = getattr(node, "_single_instance", None)
+            if lock is not None:
+                lock.release()
+            node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
 

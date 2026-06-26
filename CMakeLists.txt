@@ -44,6 +44,7 @@ install(PROGRAMS
   src/detection/acea_pipe_junction_node.py
   src/detection/gap_pose_robot_node.py
   src/detection/acea_seam_detector.py
+  src/detection/acea_detection_runtime.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

@@ -94,9 +94,27 @@ python3 src/detection/gap_pose_robot_node.py --selftest
 
 Validates the gap-frame convention and the quaternion math (9/9 checks).
 
+## Robustness (operational)
+
+Two recurring runtime failures are guarded against (see the package README,
+"Run Exactly One Detector", for the full reproduce/verify steps):
+
+- **Duplicate nodes** — a second detector or bridge on the same host refuses to
+  start (race-free file lock; override `-p allow_duplicate:=true`). A periodic
+  graph check also warns about cross-host/container copies. Every status message
+  carries `node_instance` (`host:pid`).
+- **RGB/depth sync** — if both streams flow but never sync on header stamps
+  (zero or mixed sim/wall clock), the detector switches to receive-time sync
+  automatically (`auto_receive_time_fallback`). `WAITING_FOR_SYNC` status reports
+  `rgb_hz` / `depth_hz` / `camera_info_hz`, `*_age_s`, `sync_time_source`, and a
+  human `hint`. Note: a node keeps the params it loaded at startup — restart it
+  after editing/rebuilding the config.
+
 ## Notes
 
 - The detector needs a working **depth** stream; in Gazebo bridge the depth
   camera sensor to `/camera/depth` (+ `rgb`, `camera_info`) or remap the topics.
-- This module was developed/validated in Isaac Sim; the contract
-  (`/gap/pose_robot` in `base_link`) is what `acea_concert` integrates against.
+- The contract (`/gap/pose_robot` in `base_link`) is what `acea_concert`
+  integrates against. The bridge transform is exact; if perception disagrees with
+  the ground truth, suspect the camera->`base_link` TF (see the package README,
+  "Compare Perception Against Ground Truth").

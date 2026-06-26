@@ -10,7 +10,7 @@ is_floating_base = True
 WELD_TORCH_CAMERA_NAME = "camera_F"
 WELD_TORCH_CAMERA_PARENT = "ee_F"
 WELD_TORCH_CAMERA_XYZ = [0.1, 0.0, -0.05]
-WELD_TORCH_CAMERA_RPY = [3.141593, -0.8, 0.0]  # 180 deg roll keeps the view direction, flips camera upright
+WELD_TORCH_CAMERA_RPY = [3.141593, -1.4, 0.0]  # 180 deg roll keeps the view direction, flips camera upright
 
 
 @contextlib.contextmanager

@@ -1,10 +1,16 @@
 import contextlib
 import os
 import sys
+import xml.etree.ElementTree as ET
 
 from modular.URDF_writer import UrdfWriter, write_file_to_stdout
 
 is_floating_base = True
+
+WELD_TORCH_CAMERA_NAME = "camera_F"
+WELD_TORCH_CAMERA_PARENT = "ee_F"
+WELD_TORCH_CAMERA_XYZ = [0.1, 0.0, -0.05]
+WELD_TORCH_CAMERA_RPY = [0.0, 1.57, 0.0]
 
 
 @contextlib.contextmanager
@@ -16,6 +22,29 @@ def suppress_stdout():
             yield
         finally:
             sys.stdout = old_stdout
+
+
+def add_weld_torch_camera(urdf_writer):
+    ET.SubElement(
+        urdf_writer.root,
+        "xacro:include",
+        filename="${MODULAR_PATH}/modular_data/urdf/concert.sensors.urdf.xacro",
+    )
+    camera = ET.SubElement(
+        urdf_writer.root,
+        "xacro:add_realsense_d_camera",
+        name=WELD_TORCH_CAMERA_NAME,
+        parent_name=WELD_TORCH_CAMERA_PARENT,
+        add_gazebo_sensor="true",
+    )
+    ET.SubElement(
+        camera,
+        "origin",
+        xyz=" ".join(str(x) for x in WELD_TORCH_CAMERA_XYZ),
+        rpy=" ".join(str(x) for x in WELD_TORCH_CAMERA_RPY),
+    )
+    urdf_writer.add_sensor_name("camera", WELD_TORCH_CAMERA_NAME)
+
 
 with suppress_stdout():
 
@@ -112,6 +141,7 @@ with suppress_stdout():
     homing_joint_map[str(data['name'])] = 0.0
 
     data = urdf_writer.add_module('experimental/module_weld_torch_dummy.json')
+    add_weld_torch_camera(urdf_writer)
 
     # # Right mounted interface
     # data = urdf_writer.select_module_from_name('hub_prismatic_cart_con2')

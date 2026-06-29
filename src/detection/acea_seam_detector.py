@@ -43,6 +43,8 @@ DEFAULT_PARAMS: dict[str, Any] = {
                                     # produces a dark-clamp artefact at x=W-1 that mimics
                                     # a seam; 15 px margin safely excludes it)
     "neighborhood_px": 2,           # half-width of columns averaged for the vertical span
+    "orientation_search_deg": 0.0,  # residual rotation search around pipe_axis_angle_deg
+    "orientation_search_step_deg": 2.0,
 }
 
 
@@ -56,6 +58,9 @@ class SeamDetection:
     reason: str
     vertical_run_px: int = 0
     pipe_band: tuple[int, int] = (0, 0)
+    orientation_deg: float = 0.0
+    line_xyxy: tuple[int, int, int, int] | None = None
+    rotated_column_x_px: int | None = None
     column_profile: np.ndarray | None = field(default=None, repr=False)
 
 
@@ -90,14 +95,7 @@ def _black_tophat_vertical(gray: np.ndarray, se_len: int) -> np.ndarray:
     return resp
 
 
-def detect_seam(rgb: np.ndarray, params: dict | None = None,
-                pipe_axis_angle_deg: float = 0.0) -> SeamDetection:
-    p = dict(DEFAULT_PARAMS)
-    if params:
-        p.update(params)
-    gray = _luminance(rgb)
-    if abs(pipe_axis_angle_deg) > 1.0:
-        gray = ndi.rotate(gray, pipe_axis_angle_deg, reshape=False, order=1, mode="nearest")
+def _detect_seam_on_gray(gray: np.ndarray, p: dict[str, Any], orientation_deg: float) -> SeamDetection:
     h, w = gray.shape
     r0, r1 = _pipe_band(gray, p["pipe_bright_frac"])
 
@@ -149,7 +147,45 @@ def detect_seam(rgb: np.ndarray, params: dict | None = None,
     return SeamDetection(accepted, x, zx, width, span_frac,
                          "ok" if accepted else ";".join(reasons),
                          vertical_run_px=vertical_run_px, pipe_band=(r0, r1),
+                         orientation_deg=float(orientation_deg),
                          column_profile=col)
+
+
+def _candidate_score(d: SeamDetection) -> float:
+    accepted_bonus = 1_000_000.0 if d.accepted else 0.0
+    return accepted_bonus + 1000.0 * float(d.significance) + float(d.vertical_run_px) - 10.0 * float(d.seam_width_px)
+
+
+def detect_seam(rgb: np.ndarray, params: dict | None = None,
+                pipe_axis_angle_deg: float = 0.0) -> SeamDetection:
+    p = dict(DEFAULT_PARAMS)
+    if params:
+        p.update(params)
+    gray0 = _luminance(rgb)
+
+    search = max(0.0, float(p.get("orientation_search_deg", 0.0)))
+    step = max(0.5, float(p.get("orientation_search_step_deg", 2.0)))
+    if search <= 0.0:
+        angles = [float(pipe_axis_angle_deg)]
+    else:
+        offsets = np.arange(-search, search + 0.5 * step, step)
+        angles = [float(pipe_axis_angle_deg + off) for off in offsets]
+        if not any(abs(a - pipe_axis_angle_deg) < 1e-6 for a in angles):
+            angles.append(float(pipe_axis_angle_deg))
+
+    best: SeamDetection | None = None
+    for angle in angles:
+        if abs(angle) > 1.0:
+            gray = ndi.rotate(gray0, angle, reshape=False, order=1, mode="nearest")
+        else:
+            gray = gray0
+        candidate = _detect_seam_on_gray(gray, p, angle)
+        if best is None or _candidate_score(candidate) > _candidate_score(best):
+            best = candidate
+    assert best is not None
+    if abs(best.orientation_deg) > 1e-6:
+        best.reason = best.reason if best.accepted else f"{best.reason};angle={best.orientation_deg:.1f}deg"
+    return best
 
 
 # --------------------------------------------------------------------------- #

@@ -244,6 +244,13 @@ D435i RGB/depth/camera_info
   -> /gap/pose_robot                 base_link
 ```
 
+The current arm-camera detector/tracker validation record, final PASS metrics,
+projected-GT method, and repeatable validation commands are documented in:
+
+```text
+PIPE_JUNCTION_VALIDATION.md
+```
+
 Default camera topics match `weld_sim.launch.py`:
 
 ```text

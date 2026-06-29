@@ -12,6 +12,13 @@ It publishes the exact same contract the rest of `acea_concert` already consumes
 /gap/pose_robot   geometry_msgs/PoseStamped   frame_id: base_link
 ```
 
+For the current Gazebo arm-camera validation record, projected-GT metrics, final
+PASS run, and detector/tracker interface notes, see:
+
+```text
+../../PIPE_JUNCTION_VALIDATION.md
+```
+
 ## Two nodes
 
 | Node | In | Out |

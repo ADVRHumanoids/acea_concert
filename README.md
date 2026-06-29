@@ -327,7 +327,6 @@ If this transform is missing in simulation, launch `weld_sim.launch.py` with:
 
 ```text
 publish_robot_state_tf:=true
-realsense:=true
 ```
 
 If this transform is missing on the real robot, start the proper
@@ -348,7 +347,7 @@ Do **not** run `src/gap_pose_publisher.py` at the same time: that is the
 simulation ground-truth publisher and it would publish the same controller topic
 as the perception chain.
 
-Terminal 1, start the robot simulation with XBot2 and robot TF:
+Terminal 1, start the robot simulation with XBot2 and the arm camera bridges:
 
 ```bash
 cd /home/user/concert_ws
@@ -362,12 +361,7 @@ source /home/user/concert_ws/install/setup.bash
 export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 export __GLX_VENDOR_LIBRARY_NAME=nvidia
 
-ros2 launch acea_concert weld_sim.launch.py \
-  gui:=true \
-  xbot2:=true \
-  rviz:=false \
-  realsense:=true \
-  publish_robot_state_tf:=true
+ros2 launch acea_concert weld_sim.launch.py
 ```
 
 Terminal 2, start the perception chain on the arm camera:

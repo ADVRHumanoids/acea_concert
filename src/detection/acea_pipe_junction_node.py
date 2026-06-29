@@ -31,6 +31,13 @@ from PIL import ImageDraw
 from scipy import ndimage as scipy_ndimage
 
 try:
+    import cv2
+    CV2_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover - OpenCV is optional at runtime
+    cv2 = None  # type: ignore
+    CV2_IMPORT_ERROR = exc
+
+try:
     import rclpy
     from rclpy.executors import ExternalShutdownException
     from rclpy.node import Node
@@ -83,7 +90,7 @@ except Exception as exc:  # pragma: no cover - allows offline import/test withou
         def __getattr__(self, _name: str) -> int: return 0
 
     HistoryPolicy = ReliabilityPolicy = QoSProfile = _StubAny()  # type: ignore
-    CameraInfo = Image = String = PoseStamped = Marker = MarkerArray = None  # type: ignore
+    Bool = CameraInfo = Image = String = PoseStamped = Marker = MarkerArray = None  # type: ignore
 
 # Variant A deterministic RGB-only seam detector (black top-hat + vertical-run
 # coherence, no depth). Optional frontend selected by junction_acceptance_mode
@@ -379,8 +386,14 @@ def _inverse_rotate_uv(points_uv: np.ndarray, image_size_wh: tuple[int, int], an
     shifted = points_uv.astype(np.float64) - np.array([[cx, cy]], dtype=np.float64)
     x = shifted[:, 0]
     y = shifted[:, 1]
-    original_x = cos_t * x + sin_t * y + cx
-    original_y = -sin_t * x + cos_t * y + cy
+    # Inverse of PIL Image.rotate(angle_deg) (CCW). The strip is built with
+    # rgb_image.rotate(angle_deg); to map a strip/rotated pixel back to the
+    # original image we must rotate by -angle_deg. The previous signs rotated the
+    # WRONG way: correct at angle=0 but the error grew ~lever*sin(2*angle) with
+    # camera roll (~67px at ~12deg), corrupting both the published junction line
+    # AND the 3D gap localization (_localize_confirmed_seam -> /gap/pose_robot).
+    original_x = cos_t * x - sin_t * y + cx
+    original_y = sin_t * x + cos_t * y + cy
     return np.stack([original_x, original_y], axis=1)
 
 
@@ -500,6 +513,7 @@ class SeamResult:
     yolo_seg_reason: str
     yolo_seg_mask: np.ndarray | None
     junction_acceptance_mode: str
+    variant_a_orientation_deg: float
     rgb_temporal_accepted: bool
     rgb_temporal_score: float
     rgb_vertical_edge_score: float
@@ -518,6 +532,10 @@ class SeamResult:
     rgb_track_streak: int
     rgb_track_missed_frames: int
     rgb_candidate_velocity_px_per_frame: float
+    klt_status: str
+    klt_points: int
+    klt_dx_px: float
+    klt_predicted_x_strip_px: float | None
     pipe_end_rejected: bool
     depth_gap_used_for_acceptance: bool
     accepted: bool
@@ -529,6 +547,8 @@ class SeamResult:
     rotation_deg: float
     strip_profile: np.ndarray
     strip_profile_valid: np.ndarray
+    appearance_veto: bool = False
+    appearance_ncc: float = 1.0
 
 
 @dataclass
@@ -747,6 +767,25 @@ class OnlinePipeJunctionDetector:
         self.rgb_track_x: int | None = None
         self.rgb_track_streak = 0
         self.rgb_track_missed_frames = 0
+        self.junction_lock_active = False
+        self.junction_lock_x: float | None = None
+        self.junction_lock_velocity_px = 0.0
+        self.junction_lock_streak = 0
+        self.junction_lock_missed_frames = 0
+        self.junction_lock_confidence = 0.0
+        self.junction_lock_source = "none"
+        self.klt_prev_gray: np.ndarray | None = None
+        self.klt_prev_points: np.ndarray | None = None
+        self.klt_prev_lock_x: float | None = None
+        self.klt_last_dx_px = 0.0
+        self.klt_last_points = 0
+        self.klt_status = "not_initialized"
+        # Optional appearance-identity veto (off by default): a small NCC template of
+        # the locked junction's local strip patch, used only to REJECT a candidate
+        # that hopped to a differently-looking line. Purely subtractive and cleared
+        # when the lock is lost, so it can never force a hold/phantom.
+        self.appearance_template: np.ndarray | None = None
+        self._last_appearance_patch: np.ndarray | None = None
         self.yolo_frontend = YoloSegFrontend(params)
 
     def process(self, rgb: np.ndarray, depth: np.ndarray, k: np.ndarray) -> tuple[dict[str, Any], np.ndarray, np.ndarray]:
@@ -934,7 +973,60 @@ class OnlinePipeJunctionDetector:
             "min_significance_z": float(self.params["variant_a_min_significance_z"]),
             "max_seam_width_px": float(self.params["variant_a_max_seam_width_px"]),
             "border_margin_px": int(self.params["variant_a_border_margin_px"]),
+            "orientation_search_deg": float(self.params["variant_a_orientation_search_deg"]),
+            "orientation_search_step_deg": float(self.params["variant_a_orientation_search_step_deg"]),
         }
+
+    @staticmethod
+    def _variant_a_center_x_in_strip(det: Any, strip_shape: tuple[int, int]) -> int:
+        """Map Variant-A rotated-frame column back to the unrotated strip x."""
+        h, w = int(strip_shape[0]), int(strip_shape[1])
+        x_rot = float(getattr(det, "x_px", 0.0))
+        angle_deg = float(getattr(det, "orientation_deg", 0.0))
+        if abs(angle_deg) < 1e-6:
+            return int(np.clip(round(x_rot), 0, max(w - 1, 0)))
+
+        cx = 0.5 * float(w - 1)
+        cy = 0.5 * float(h - 1)
+        theta = math.radians(angle_deg)
+        c = math.cos(theta)
+        s = math.sin(theta)
+
+        def inverse_x(x: float, y: float) -> float:
+            dx = float(x) - cx
+            dy = float(y) - cy
+            return c * dx - s * dy + cx
+
+        x0 = inverse_x(x_rot, 0.0)
+        x1 = inverse_x(x_rot, float(h - 1))
+        return int(np.clip(round(0.5 * (x0 + x1)), 0, max(w - 1, 0)))
+
+    def _appearance_patch(self, gray: np.ndarray, candidate_x: int) -> np.ndarray | None:
+        """Fixed-size grayscale patch around the candidate column in the pipe-aligned
+        strip (numpy-only). The strip is already de-rotated, so this is rotation-stable."""
+        half = int(self.params.get("appearance_template_half_px", 28))
+        h, w = gray.shape
+        if w < 2 * half + 1 or h < 8:
+            return None
+        x0 = int(np.clip(candidate_x - half, 0, max(0, w - (2 * half + 1))))
+        patch = gray[:, x0:x0 + 2 * half + 1]
+        if patch.shape[1] < 2 * half + 1:
+            patch = np.pad(patch, ((0, 0), (0, 2 * half + 1 - patch.shape[1])), mode="edge")
+        idx = np.linspace(0, h - 1, 48).round().astype(int)  # canonical height
+        return patch[idx, :].astype(np.float64)
+
+    @staticmethod
+    def _appearance_ncc(a: np.ndarray, b: np.ndarray) -> float:
+        """Zero-mean normalized cross-correlation in [-1, 1]."""
+        if a.shape != b.shape:
+            return 0.0
+        a = a - float(a.mean())
+        b = b - float(b.mean())
+        na = float(np.linalg.norm(a))
+        nb = float(np.linalg.norm(b))
+        if na < 1e-6 or nb < 1e-6:
+            return 0.0
+        return float(np.dot(a.ravel(), b.ravel()) / (na * nb))
 
     def _detect_seam(self, rgb: np.ndarray, depth: np.ndarray, tracker: TrackerResult) -> SeamResult:
         rgb_image = PilImage.fromarray(rgb, mode="RGB")
@@ -1026,12 +1118,30 @@ class OnlinePipeJunctionDetector:
         )
         use_yolo = bool(self.params["use_yolo_seg_frontend"])
         if mode == "variant_a_rgb" and variant_a_result is not None:
-            candidate_x = int(np.clip(int(variant_a_result.x_px), 0, strip_width - 1))
+            candidate_x = self._variant_a_center_x_in_strip(variant_a_result, gray.shape)
         elif use_yolo and yolo_candidate.candidate_x_strip_px is not None:
             candidate_x = int(yolo_candidate.candidate_x_strip_px)
             candidate_x = int(np.clip(candidate_x, 0, strip_width - 1))
         else:
             candidate_x = classical_candidate_x
+        klt_prediction = self._klt_predict_junction_x(gray, strip_mask, residual, valid)
+        if klt_prediction["available"] and self.junction_lock_active:
+            candidate_x = int(klt_prediction["candidate_x"])
+        klt_predicted_x = klt_prediction.get("predicted_x")
+
+        # Optional appearance-identity veto (off by default): compare the local strip
+        # patch at the current candidate column to the template captured at lock. Only
+        # marks a veto; the template is captured/cleared by the state machine.
+        appearance_ncc = 1.0
+        appearance_veto = False
+        self._last_appearance_patch = None
+        if bool(self.params.get("enable_appearance_veto", False)):
+            patch = self._appearance_patch(gray, candidate_x)
+            self._last_appearance_patch = patch
+            if patch is not None and self.appearance_template is not None:
+                appearance_ncc = self._appearance_ncc(patch, self.appearance_template)
+                if appearance_ncc < float(self.params.get("appearance_veto_min_ncc", 0.35)):
+                    appearance_veto = True
 
         contrast = float(max(0.0, residual[candidate_x]))
         min_dark = float(self.params["min_dark_contrast"])
@@ -1249,6 +1359,9 @@ class OnlinePipeJunctionDetector:
                 else:
                     negative_gate_reason = f"{negative_gate_reason};temporal_change_rejected:{temporal_change.reason}"
 
+        if accepted and bool(self.params["enable_opencv_klt_tracking"]):
+            self._klt_update_reference(np.clip(gray * 255.0, 0, 255).astype(np.uint8), strip_mask, float(candidate_x))
+
         return SeamResult(
             candidate_x_strip_px=candidate_x,
             candidate_x_rotated_px=int(x0 + candidate_x),
@@ -1300,6 +1413,9 @@ class OnlinePipeJunctionDetector:
             yolo_seg_reason=yolo_candidate.reason,
             yolo_seg_mask=yolo_candidate.mask,
             junction_acceptance_mode=mode,
+            variant_a_orientation_deg=0.0
+            if variant_a_result is None
+            else float(getattr(variant_a_result, "orientation_deg", 0.0)),
             rgb_temporal_accepted=rgb_temporal_accepted,
             rgb_temporal_score=rgb_temporal_score,
             rgb_vertical_edge_score=rgb_vertical_edge_score,
@@ -1318,6 +1434,10 @@ class OnlinePipeJunctionDetector:
             rgb_track_streak=int(track["streak"]),
             rgb_track_missed_frames=int(track["missed"]),
             rgb_candidate_velocity_px_per_frame=float(track["velocity"]),
+            klt_status=str(klt_prediction.get("reason", "unavailable")),
+            klt_points=int(klt_prediction.get("points", 0) or 0),
+            klt_dx_px=float(klt_prediction.get("dx_px", 0.0) or 0.0),
+            klt_predicted_x_strip_px=None if klt_predicted_x is None else float(klt_predicted_x),
             pipe_end_rejected=pipe_end_rejected,
             depth_gap_used_for_acceptance=depth_gap_used_for_acceptance,
             accepted=accepted,
@@ -1329,6 +1449,8 @@ class OnlinePipeJunctionDetector:
             rotation_deg=angle_deg,
             strip_profile=profile,
             strip_profile_valid=valid,
+            appearance_veto=appearance_veto,
+            appearance_ncc=appearance_ncc,
         )
 
     def _rgb_shadow_continuity_features(
@@ -1465,6 +1587,124 @@ class OnlinePipeJunctionDetector:
             "surface_continuity_rejected": surface_continuity_rejected,
         }
 
+    def _klt_predict_junction_x(
+        self,
+        gray: np.ndarray,
+        strip_mask: np.ndarray,
+        residual: np.ndarray,
+        valid: np.ndarray,
+    ) -> dict[str, Any]:
+        if not bool(self.params["enable_opencv_klt_tracking"]):
+            return {"available": False, "reason": "disabled", "candidate_x": None}
+        if cv2 is None:
+            self.klt_status = f"opencv_unavailable:{type(CV2_IMPORT_ERROR).__name__}"
+            return {"available": False, "reason": self.klt_status, "candidate_x": None}
+        if gray.ndim != 2 or strip_mask.shape != gray.shape or residual.size != gray.shape[1]:
+            return {"available": False, "reason": "invalid_strip", "candidate_x": None}
+        if not self.junction_lock_active or self.junction_lock_x is None:
+            self._klt_reset()
+            return {"available": False, "reason": "not_locked", "candidate_x": None}
+
+        gray_u8 = np.clip(gray * 255.0, 0, 255).astype(np.uint8)
+        h, w = gray_u8.shape
+        prev_x = float(self.junction_lock_x)
+        predicted = prev_x + float(self.junction_lock_velocity_px)
+        points_now = 0
+
+        if self.klt_prev_gray is not None and self.klt_prev_points is not None and self.klt_prev_points.size > 0:
+            try:
+                next_pts, status, _err = cv2.calcOpticalFlowPyrLK(
+                    self.klt_prev_gray,
+                    gray_u8,
+                    self.klt_prev_points,
+                    None,
+                    winSize=(int(self.params["klt_win_size_px"]), int(self.params["klt_win_size_px"])),
+                    maxLevel=int(self.params["klt_max_level"]),
+                    criteria=(
+                        cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT,
+                        int(self.params["klt_term_count"]),
+                        float(self.params["klt_term_eps"]),
+                    ),
+                )
+            except Exception as exc:
+                self.klt_status = f"klt_error:{type(exc).__name__}"
+                next_pts = status = None
+            if next_pts is not None and status is not None:
+                good = status.reshape(-1).astype(bool)
+                prev = self.klt_prev_points.reshape(-1, 2)[good]
+                nxt = next_pts.reshape(-1, 2)[good]
+                in_bounds = (
+                    (nxt[:, 0] >= 0.0)
+                    & (nxt[:, 0] < float(w))
+                    & (nxt[:, 1] >= 0.0)
+                    & (nxt[:, 1] < float(h))
+                ) if nxt.size else np.zeros(0, dtype=bool)
+                prev = prev[in_bounds]
+                nxt = nxt[in_bounds]
+                points_now = int(nxt.shape[0])
+                if points_now >= int(self.params["klt_min_valid_points"]):
+                    dx = float(np.median(nxt[:, 0] - prev[:, 0]))
+                    self.klt_last_dx_px = dx
+                    predicted = prev_x + dx
+                    self.klt_status = "tracked"
+                else:
+                    self.klt_status = f"too_few_points:{points_now}"
+
+        radius = int(self.params["junction_lock_search_radius_px"])
+        center = int(round(np.clip(predicted, 0, max(w - 1, 0))))
+        lo = max(0, center - radius)
+        hi = min(w - 1, center + radius)
+        local_valid = valid.copy()
+        local_valid[:lo] = False
+        local_valid[hi + 1:] = False
+        if not local_valid.any():
+            self._klt_update_reference(gray_u8, strip_mask, prev_x)
+            return {"available": False, "reason": "no_valid_local_columns", "candidate_x": None}
+
+        candidate_x = int(np.argmax(np.where(local_valid, residual, -np.inf)))
+        self._klt_update_reference(gray_u8, strip_mask, float(candidate_x))
+        self.klt_last_points = points_now
+        return {
+            "available": True,
+            "reason": self.klt_status,
+            "candidate_x": candidate_x,
+            "predicted_x": float(predicted),
+            "dx_px": float(self.klt_last_dx_px),
+            "points": int(points_now),
+        }
+
+    def _klt_update_reference(self, gray_u8: np.ndarray, strip_mask: np.ndarray, center_x: float) -> None:
+        if cv2 is None or gray_u8.ndim != 2:
+            return
+        h, w = gray_u8.shape
+        radius = int(self.params["klt_feature_radius_px"])
+        x0 = max(0, int(round(center_x)) - radius)
+        x1 = min(w - 1, int(round(center_x)) + radius)
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mask[:, x0:x1 + 1] = strip_mask[:, x0:x1 + 1].astype(np.uint8) * 255
+        try:
+            pts = cv2.goodFeaturesToTrack(
+                gray_u8,
+                maxCorners=int(self.params["klt_max_features"]),
+                qualityLevel=float(self.params["klt_quality_level"]),
+                minDistance=float(self.params["klt_min_distance_px"]),
+                mask=mask,
+                blockSize=int(self.params["klt_block_size_px"]),
+            )
+        except Exception:
+            pts = None
+        self.klt_prev_gray = gray_u8.copy()
+        self.klt_prev_points = pts.astype(np.float32) if pts is not None else None
+        self.klt_prev_lock_x = float(center_x)
+
+    def _klt_reset(self) -> None:
+        self.klt_prev_gray = None
+        self.klt_prev_points = None
+        self.klt_prev_lock_x = None
+        self.klt_last_dx_px = 0.0
+        self.klt_last_points = 0
+        self.klt_status = "not_locked"
+
     def _rgb_vertical_edge_profile(self, gray: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         height, width = gray.shape
         gradient = np.zeros_like(gray, dtype=np.float64)
@@ -1531,7 +1771,12 @@ class OnlinePipeJunctionDetector:
         left1 = max(0, x - 1)
         right0 = min(width - 1, x + 1)
         right1 = min(width - 1, x + side_width)
-        if left1 < left0 or right1 < right0:
+        # A real junction has FULL pipe support on BOTH sides. If the candidate is
+        # within side_width of the strip/image border, that support band is clipped
+        # by the frame (the junction is exiting / the pipe is cut off) -> treat it
+        # as a pipe-end so acceptance stops BEFORE the junction leaves view, not
+        # after (avoids latching onto clipped pipe edges during an exit).
+        if (x - side_width) < 0 or (x + side_width) > (width - 1):
             return True
         left = strip_mask[:, left0:left1 + 1]
         right = strip_mask[:, right0:right1 + 1]
@@ -1806,20 +2051,39 @@ class OnlinePipeJunctionDetector:
                 jump_ok = False
                 jump_reason = f"candidate_jump={jump}px"
 
-        eligible = seam.accepted and confidence_ok and candidate_not_border and geometry_ok and jump_ok
+        eligible = (seam.accepted and confidence_ok and candidate_not_border
+                    and geometry_ok and jump_ok and not seam.appearance_veto)
+        lock_used = False
+        lock_reason = "none"
 
         if eligible:
+            self._update_junction_lock(seam)
             self.candidate_streak += 1
             if self.candidate_streak >= int(self.params["min_confirm_frames"]):
                 self.state = "STOP_AND_LOCALIZE"
                 if self.confirmed_frame_count is None:
                     self.confirmed_frame_count = self.processed_frame_count
+                if (bool(self.params.get("enable_appearance_veto", False))
+                        and self.appearance_template is None
+                        and self._last_appearance_patch is not None):
+                    self.appearance_template = self._last_appearance_patch
             else:
                 self.state = "CANDIDATE"
         else:
-            self.candidate_streak = 0
-            self.state = "SCAN"
-            self.confirmed_frame_count = None
+            lock_used, lock_reason = self._try_hold_junction_lock(seam, geometry_ok)
+            if lock_used:
+                eligible = True
+                confidence_ok = True
+                candidate_not_border = self._candidate_not_border(seam)
+                self.candidate_streak = max(self.candidate_streak, int(self.params["min_confirm_frames"]))
+                self.state = "STOP_AND_LOCALIZE"
+                if self.confirmed_frame_count is None:
+                    self.confirmed_frame_count = self.processed_frame_count
+            else:
+                self.candidate_streak = 0
+                self.state = "SCAN"
+                self.confirmed_frame_count = None
+                self.appearance_template = None
 
         if eligible:
             self.previous_geometry = current_geometry
@@ -1848,6 +2112,10 @@ class OnlinePipeJunctionDetector:
             reason_parts.extend(geometry_failures)
         if not jump_ok:
             reason_parts.append(jump_reason)
+        if seam.appearance_veto:
+            reason_parts.append(f"appearance_veto={seam.appearance_ncc:.2f}")
+        if lock_used:
+            reason_parts.append(f"junction_track:{lock_reason}")
         if eligible:
             reason_parts.append("eligible")
         if self.state == "STOP_AND_LOCALIZE":
@@ -1855,10 +2123,118 @@ class OnlinePipeJunctionDetector:
 
         return {
             "eligible": eligible,
+            "jump_ok": jump_ok,
             "candidate_not_border": candidate_not_border,
             "geometry_consistent": geometry_ok,
             "reason": ";".join(reason_parts),
+            "junction_lock_active": self.junction_lock_active,
+            "junction_lock_used": lock_used,
+            "junction_lock_reason": lock_reason,
+            "junction_lock_x_strip_px": None if self.junction_lock_x is None else float(self.junction_lock_x),
+            "junction_lock_velocity_px_per_frame": float(self.junction_lock_velocity_px),
+            "junction_lock_streak": int(self.junction_lock_streak),
+            "junction_lock_missed_frames": int(self.junction_lock_missed_frames),
+            "junction_lock_confidence": float(self.junction_lock_confidence),
+            "junction_lock_source": self.junction_lock_source,
         }
+
+    def _update_junction_lock(self, seam: SeamResult) -> None:
+        x = float(seam.candidate_x_strip_px)
+        if self.junction_lock_x is None or not self.junction_lock_active:
+            self.junction_lock_velocity_px = 0.0
+            self.junction_lock_streak = 1
+        else:
+            measured_velocity = x - float(self.junction_lock_x)
+            # Smooth velocity so camera/base motion can be followed without
+            # jumping to one-frame outliers.
+            self.junction_lock_velocity_px = 0.7 * self.junction_lock_velocity_px + 0.3 * measured_velocity
+            self.junction_lock_streak += 1
+        self.junction_lock_x = x
+        self.junction_lock_active = True
+        self.junction_lock_missed_frames = 0
+        self.junction_lock_confidence = max(float(seam.confidence), float(self.params["junction_lock_min_confidence"]))
+        self.junction_lock_source = "fresh_detection"
+
+    def _release_junction_lock(self, reason: str) -> tuple[bool, str]:
+        self.junction_lock_active = False
+        self.junction_lock_x = None
+        self.junction_lock_velocity_px = 0.0
+        self.junction_lock_streak = 0
+        self.junction_lock_missed_frames = 0
+        self.junction_lock_confidence = 0.0
+        self.junction_lock_source = f"released:{reason}"
+        # Track lost: clear the continuity references too, so the NEXT fresh
+        # detection is re-acquired clean and is NOT gated against the stale
+        # pre-loss column. Without this the detector stays poisoned after an exit
+        # (a good re-appearing junction is rejected forever with
+        # candidate_jump=<big>px, because previous_candidate_x kept the old value).
+        self.previous_candidate_x = None
+        self.previous_geometry = None
+        return False, reason
+
+    def _try_hold_junction_lock(self, seam: SeamResult, geometry_ok: bool) -> tuple[bool, str]:
+        if not bool(self.params["enable_junction_lock"]):
+            return False, "disabled"
+        if not self.junction_lock_active or self.junction_lock_x is None:
+            return False, "not_locked"
+        if not geometry_ok:
+            return self._release_junction_lock("geometry_changed")
+
+        self.junction_lock_missed_frames += 1
+        max_missed = int(self.params["junction_lock_max_missed_frames"])
+        if self.junction_lock_missed_frames > max_missed:
+            return self._release_junction_lock("missed_too_long")
+
+        width = int(seam.strip_size_wh[0])
+        if width <= 0:
+            return self._release_junction_lock("invalid_strip")
+        predicted = float(self.junction_lock_x) + float(self.junction_lock_velocity_px)
+        measured_i = int(seam.candidate_x_strip_px)
+        search_radius = float(self.params["junction_lock_search_radius_px"])
+        if abs(float(measured_i) - predicted) > search_radius:
+            return False, "measurement_far_from_track"
+
+        # The lock is a prior, not a hallucination: keep publishing only if the
+        # current frame still contains seam-like evidence near the predicted
+        # position. This lets the seam move with camera/robot motion while
+        # avoiding a static pose in empty image space.
+        visual_reacquire = bool(
+            not seam.pipe_end_rejected
+            and seam.rgb_line_width_px <= int(self.params["rgb_temporal_max_line_width_px"])
+            and (
+                float(seam.candidate_z_score) >= float(self.params["junction_lock_min_reacquire_z"])
+                or float(seam.candidate_contrast) >= float(self.params["junction_lock_min_reacquire_contrast"])
+            )
+        )
+        if not visual_reacquire:
+            return False, "no_visual_reacquire"
+
+        if not (seam.edge_margin_px <= measured_i < width - seam.edge_margin_px):
+            return self._release_junction_lock("out_of_view")
+
+        decay = float(self.params["junction_lock_confidence_decay"])
+        self.junction_lock_confidence = max(
+            self.junction_lock_confidence * decay,
+            float(seam.confidence) * decay,
+            float(self.params["junction_lock_min_confidence"]),
+        )
+        if self.junction_lock_confidence < float(self.params["junction_lock_min_confidence"]):
+            return self._release_junction_lock("confidence_decayed")
+
+        measured_velocity = float(measured_i) - float(self.junction_lock_x)
+        self.junction_lock_velocity_px = 0.7 * self.junction_lock_velocity_px + 0.3 * measured_velocity
+        self.junction_lock_x = float(measured_i)
+        self.junction_lock_source = "reacquired_measurement"
+
+        seam.candidate_x_strip_px = measured_i
+        seam.candidate_x_rotated_px = int(seam.crop_xyxy[0] + measured_i)
+        seam.confidence = float(self.junction_lock_confidence)
+        seam.accepted = True
+        seam.local_candidate_accepted = True
+        seam.visual_frontend_accepted = True
+        seam.rgb_dark_accepted = True
+        seam.negative_gate_reason = "junction_lock_reacquired"
+        return True, "reacquired_measurement"
 
     def _geometry_consistent(self, current: dict[str, float | None]) -> tuple[bool, list[str]]:
         if self.previous_geometry is None:
@@ -2028,11 +2404,29 @@ class OnlinePipeJunctionDetector:
             "processed_frame_count": self.processed_frame_count,
             "confirmed_frame_count": self.confirmed_frame_count,
             "candidate_streak": self.candidate_streak,
+            "junction_lock_active": bool(state_info.get("junction_lock_active", False)),
+            "junction_lock_used": bool(state_info.get("junction_lock_used", False)),
+            "junction_lock_reason": state_info.get("junction_lock_reason"),
+            "junction_lock_x_strip_px": _round(state_info.get("junction_lock_x_strip_px")),
+            "junction_lock_velocity_px_per_frame": _round(state_info.get("junction_lock_velocity_px_per_frame")),
+            "junction_lock_streak": int(state_info.get("junction_lock_streak", 0)),
+            "junction_lock_missed_frames": int(state_info.get("junction_lock_missed_frames", 0)),
+            "junction_lock_confidence": _round(state_info.get("junction_lock_confidence")),
+            "junction_lock_source": state_info.get("junction_lock_source"),
             "confidence": _round(seam.confidence),
             "junction_acceptance_mode": seam.junction_acceptance_mode,
+            "variant_a_orientation_deg": _round(seam.variant_a_orientation_deg),
             "visual_frontend": seam.visual_frontend,
             "visual_frontend_accepted": bool(seam.visual_frontend_accepted),
             "candidate_x_strip_px": int(seam.candidate_x_strip_px),
+            # Junction line in ORIGINAL image pixels (the two endpoints the overlay
+            # draws): [[u0,v0],[u1,v1]]. Lets an external projected ground truth
+            # compare in image space regardless of pipe roll. None if unavailable.
+            "candidate_line_image_uv": (
+                [[round(float(p[0]), 1), round(float(p[1]), 1)]
+                 for p in self._candidate_line_original_uv(seam)]
+                if seam.candidate_x_rotated_px is not None else None
+            ),
             "candidate_contrast": _round(seam.candidate_contrast),
             "candidate_z_score": _round(seam.candidate_z_score),
             "classical_candidate_x_strip_px": int(seam.classical_candidate_x_strip_px),
@@ -2042,7 +2436,10 @@ class OnlinePipeJunctionDetector:
             "rgb_local_contrast_score": _round(seam.rgb_local_contrast_score),
             "rgb_dark_threshold_used": _round(seam.rgb_dark_threshold_used),
             "weak_rgb_depth_supported": bool(seam.weak_rgb_depth_supported),
-            "detector_accepted": bool(seam.accepted),
+            # A raw seam acceptance that the state machine flagged as a large
+            # candidate jump (hop to another line) must NOT be surfaced as accepted
+            # nor propagated downstream: the jump guard already refused to lock it.
+            "detector_accepted": bool(seam.accepted and state_info.get("jump_ok", True)),
             "rgb_dark_accepted": bool(seam.rgb_dark_accepted),
             "yolo_seg_enabled": bool(seam.yolo_seg_enabled),
             "yolo_seg_available": bool(seam.yolo_seg_available),
@@ -2080,6 +2477,10 @@ class OnlinePipeJunctionDetector:
             "rgb_track_streak": int(seam.rgb_track_streak),
             "rgb_track_missed_frames": int(seam.rgb_track_missed_frames),
             "rgb_candidate_velocity_px_per_frame": _round(seam.rgb_candidate_velocity_px_per_frame),
+            "klt_status": seam.klt_status,
+            "klt_points": int(seam.klt_points),
+            "klt_dx_px": _round(seam.klt_dx_px),
+            "klt_predicted_x_strip_px": _round(seam.klt_predicted_x_strip_px),
             "pipe_end_rejected": bool(seam.pipe_end_rejected),
             "depth_gap_used_for_acceptance": bool(seam.depth_gap_used_for_acceptance),
             "depth_gap_score": _round(seam.depth_gap_score),
@@ -2235,8 +2636,13 @@ class AceaPipeJunctionNode(Node):
         self._receive_time_fallback_logged = False
         self._last_subscription_reset_time = 0.0
 
+        camera_qos_reliability = str(self.params.get("camera_qos_reliability", "best_effort")).strip().lower()
+        if camera_qos_reliability in ("reliable", "rel"):
+            reliability = ReliabilityPolicy.RELIABLE
+        else:
+            reliability = ReliabilityPolicy.BEST_EFFORT
         self._camera_qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            reliability=reliability,
             history=HistoryPolicy.KEEP_LAST,
             depth=int(self.params["queue_size"]),
         )
@@ -2311,6 +2717,7 @@ class AceaPipeJunctionNode(Node):
             "allow_duplicate": False,
             "allow_stale_camera_info": True,
             "queue_size": 10,
+            "camera_qos_reliability": "best_effort",
             "publish_waiting_status": True,
             "waiting_status_period_s": 1.0,
             "stream_stale_s": 2.0,
@@ -2348,6 +2755,8 @@ class AceaPipeJunctionNode(Node):
             "variant_a_max_seam_width_px": 14.0,
             "variant_a_border_margin_px": 15,
             "variant_a_z_confidence_strong": 10.0,
+            "variant_a_orientation_search_deg": 25.0,
+            "variant_a_orientation_search_step_deg": 2.0,
             # Pipe-end rejection for Variant A (an end/start is not a junction):
             "variant_a_use_depth_pipe_end_gate": True,   # coarse depth: reject a huge jump
             "variant_a_pipe_end_max_depth_jump_m": 0.15,  # >> 3 mm seam, << pipe-end (~0.7 m)
@@ -2364,6 +2773,24 @@ class AceaPipeJunctionNode(Node):
             "rgb_temporal_track_max_jump_px": 180,
             "rgb_temporal_track_missed_max": 5,
             "rgb_temporal_min_track_streak": 2,
+            "enable_junction_lock": True,
+            "junction_lock_max_missed_frames": 12,
+            "junction_lock_search_radius_px": 180,
+            "junction_lock_min_reacquire_z": 3.0,
+            "junction_lock_min_reacquire_contrast": 0.006,
+            "junction_lock_confidence_decay": 0.96,
+            "junction_lock_min_confidence": 0.25,
+            "enable_opencv_klt_tracking": True,
+            "klt_max_features": 80,
+            "klt_feature_radius_px": 80,
+            "klt_min_valid_points": 4,
+            "klt_quality_level": 0.01,
+            "klt_min_distance_px": 5.0,
+            "klt_block_size_px": 7,
+            "klt_win_size_px": 21,
+            "klt_max_level": 3,
+            "klt_term_count": 20,
+            "klt_term_eps": 0.03,
             "rgb_temporal_pipe_end_side_width_px": 32,
             "rgb_temporal_pipe_end_min_side_coverage": 0.18,
             "rgb_temporal_pipe_end_max_coverage_delta": 0.65,
@@ -2848,6 +3275,15 @@ class AceaPipeJunctionNode(Node):
             "confidence": status.get("confidence"),
             "candidate_x_strip_px": status.get("candidate_x_strip_px"),
             "candidate_x_image_px": status.get("candidate_x_image_px"),
+            "variant_a_orientation_deg": status.get("variant_a_orientation_deg"),
+            "junction_lock_active": bool(status.get("junction_lock_active", False)),
+            "junction_lock_used": bool(status.get("junction_lock_used", False)),
+            "junction_lock_missed_frames": status.get("junction_lock_missed_frames"),
+            "junction_lock_confidence": status.get("junction_lock_confidence"),
+            "junction_lock_source": status.get("junction_lock_source"),
+            "klt_status": status.get("klt_status"),
+            "klt_points": status.get("klt_points"),
+            "klt_dx_px": status.get("klt_dx_px"),
             "rgb_dark_accepted": status.get("rgb_dark_accepted"),
             "depth_gap_accepted": status.get("depth_gap_accepted"),
             "gap_plane_available": bool(status.get("gap_plane_available", False)),
@@ -2876,6 +3312,12 @@ class AceaPipeJunctionNode(Node):
         self.status_pub.publish(String(data=json.dumps(compact, sort_keys=True, allow_nan=False)))
 
     def _publish(self, status: dict[str, Any], rgb_overlay: np.ndarray, depth_overlay: np.ndarray, header: Any) -> None:
+        # Stamp the detection with the processed-RGB header time so an external
+        # tool can pair this detection to the EXACT recorded frame (by stamp, not
+        # latest-arrival) -- removes async during fast sweeps for projected-GT.
+        if header is not None and getattr(header, "stamp", None) is not None:
+            status["rgb_stamp_s"] = round(
+                float(header.stamp.sec) + 1e-9 * float(header.stamp.nanosec), 9)
         gap_payload, pose_msg, marker_array = self._build_weld_gap_geometry(status, header)
         if gap_payload is not None:
             status.update(

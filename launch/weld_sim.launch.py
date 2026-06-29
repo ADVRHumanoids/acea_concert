@@ -167,7 +167,7 @@ def generate_launch_description():
         DeclareLaunchArgument("gui",       default_value="true",  description="Launch Gazebo GUI"),
         DeclareLaunchArgument("xbot2",     default_value="true",  description="Launch XBot2"),
         DeclareLaunchArgument("rviz",      default_value="false", description="Launch RViz"),
-        DeclareLaunchArgument("realsense", default_value="false", description="Include RealSense"),
+        DeclareLaunchArgument("realsense", default_value="true", description="Include RealSense"),
         DeclareLaunchArgument("velodyne",  default_value="false", description="Include Velodyne"),
         DeclareLaunchArgument("pipe_offset_x", default_value="2.0",
                               description="Pipe center X in the robot nominal start frame [m]"),

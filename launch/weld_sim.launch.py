@@ -132,27 +132,6 @@ BLACK_BACKDROP_SDF_TEMPLATE = """<?xml version="1.0" ?>
     </link>
   </model>
 </sdf>"""
-GAP_FRONT_STRIPE_SDF_TEMPLATE = """<?xml version="1.0" ?>
-<sdf version="1.6">
-  <model name="weld_gap_front_black_stripe">
-    <static>true</static>
-    <link name="gap_front_black_stripe_link">
-      <visual name="gap_front_black_stripe_visual">
-        <geometry>
-          <box>
-            <size>{thickness_x} {width_y} {height_z}</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>0.0 0.0 0.0 1</ambient>
-          <diffuse>0.0 0.0 0.0 1</diffuse>
-          <specular>0.0 0.0 0.0 1</specular>
-          <emissive>0.0 0.0 0.0 1</emissive>
-        </material>
-      </visual>
-    </link>
-  </model>
-</sdf>"""
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -176,7 +155,6 @@ def _spawn_pipe_actions(context, *args, **kwargs):
     if gap_marker_width <= 0.0:
         gap_marker_width = pipe_gap
     spawn_gap_marker = _bool_launch_config(context, "spawn_gap_visual_marker")
-    spawn_gap_front_stripe = _bool_launch_config(context, "spawn_gap_front_visual_stripe")
     spawn_black_backdrop = _bool_launch_config(context, "spawn_gap_black_backdrop")
     backdrop_offset = _float_launch_config(context, "gap_black_backdrop_offset_m")
     backdrop_length = _float_launch_config(context, "gap_black_backdrop_length_m")
@@ -202,12 +180,6 @@ def _spawn_pipe_actions(context, *args, **kwargs):
         length_y=max(pipe_total_length + 1.0, backdrop_length),
         height_z=max(3.0 * pipe_radius, backdrop_height),
     )
-    gap_front_stripe_sdf = GAP_FRONT_STRIPE_SDF_TEMPLATE.format(
-        thickness_x=0.018,
-        width_y=max(0.006, gap_marker_width),
-        height_z=max(2.4 * pipe_radius, 0.20),
-    )
-
     # The sim robot is spawned at world XY = 0. Express the optimized pipe
     # position in this nominal robot-start frame.
     nominal_robot_x = PIPE_X - pipe_offset_x
@@ -316,29 +288,6 @@ def _spawn_pipe_actions(context, *args, **kwargs):
                 ],
             )
         )
-    if spawn_gap_front_stripe:
-        actions.append(
-            TimerAction(
-                period=2.15,
-                actions=[
-                    Node(
-                        package="ros_gz_sim",
-                        executable="create",
-                        name="spawn_weld_gap_front_black_stripe",
-                        arguments=[
-                            "-string", gap_front_stripe_sdf,
-                            "-x", f"{pipe_spawn_x - (pipe_radius + 0.006) * pipe_back_axis[0]:.6f}",
-                            "-y", f"{pipe_spawn_y - (pipe_radius + 0.006) * pipe_back_axis[1]:.6f}",
-                            "-z", f"{pipe_z:.6f}",
-                            "-R", "0.0",
-                            "-P", "0.0",
-                            "-Y", f"{pipe_y_axis_yaw:.6f}",
-                        ],
-                        output="screen",
-                    ),
-                ],
-            )
-        )
     return actions
 
 
@@ -438,8 +387,6 @@ def generate_launch_description():
                               description="Spawn a short black cylindrical mini-pipe inside the junction for RGB detector smoke tests"),
         DeclareLaunchArgument("gap_visual_marker_width_m", default_value="-1.0",
                               description="Length of the black junction filler along the pipe axis [m]; <=0 follows pipe_gap_m"),
-        DeclareLaunchArgument("spawn_gap_front_visual_stripe", default_value="false",
-                              description="Optional debug-only front-facing black stripe on the visible pipe surface"),
         DeclareLaunchArgument("spawn_gap_black_backdrop", default_value="false",
                               description="Spawn a large black panel behind the pipe so the real gap appears dark in RGB"),
         DeclareLaunchArgument("gap_black_backdrop_offset_m", default_value="0.35",

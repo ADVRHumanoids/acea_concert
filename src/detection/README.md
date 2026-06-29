@@ -71,9 +71,6 @@ If the perceived frame points the opposite way to the GT convention, flip
 ```bash
 # build + source the workspace, then:
 ros2 launch acea_concert detection.launch.py
-
-# point at non-default camera topics / enable YOLO frontend:
-ros2 launch acea_concert detection.launch.py use_yolo_seg_frontend:=true
 ```
 
 Or each node standalone:
@@ -93,6 +90,19 @@ ros2 topic echo /gap/pose_robot
 
 Config lives in `config/detector.yaml` and `config/gap_pose_robot.yaml`.
 
+## Internal perception validation/debug
+
+Keep the detailed perception-only procedures here or in the validation note,
+not in the package-level README. The package-level README should stay focused
+on what the controller consumes and how to start the arm-camera detector.
+
+Use `../../PIPE_JUNCTION_VALIDATION.md` for:
+
+- arm-camera final validation runs;
+- duplicate-detector / stale-stream debugging;
+- projected ground-truth checks;
+- replay/analysis artifacts and expected PASS metrics.
+
 ## Geometry self-test (no ROS / no GPU)
 
 ```bash
@@ -103,8 +113,8 @@ Validates the gap-frame convention and the quaternion math (9/9 checks).
 
 ## Robustness (operational)
 
-Two recurring runtime failures are guarded against (see the package README,
-"Run Exactly One Detector", for the full reproduce/verify steps):
+Two recurring runtime failures are guarded against (see
+`../../PIPE_JUNCTION_VALIDATION.md` for the full reproduce/verify steps):
 
 - **Duplicate nodes** — a second detector or bridge on the same host refuses to
   start (race-free file lock; override `-p allow_duplicate:=true`). A periodic
@@ -125,5 +135,5 @@ Two recurring runtime failures are guarded against (see the package README,
   integrates against. The bridge transform and the camera->`base_link` extrinsic
   are correct (the TF matches the Gazebo camera mount). The detector now keeps
   the seam 3D support on a coherent depth component and uses the ACEA concert
-  pipe radius (`0.10 m`) when estimating the gap centre (see the package README,
-  "Compare Perception Against Ground Truth").
+  pipe radius (`0.10 m`) when estimating the gap centre (see
+  `../../PIPE_JUNCTION_VALIDATION.md` for the projected-GT validation record).

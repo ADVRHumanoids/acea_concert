@@ -224,11 +224,15 @@ The perception replacement publishes the same controller contract:
 ```
 
 Launch it instead of `src/gap_pose_publisher.py` when RGB-D camera data and the
-camera-to-`base_link` TF are available:
+camera-to-`base_link` TF are available. For the fixed/front D435i camera:
 
 ```bash
 ros2 launch acea_concert detection.launch.py
 ```
+
+For the arm-mounted camera used by the controller tests, use
+`arm_camera_detection.launch.py` instead; it bridges `/camera_F` and points the
+detector at that wrist camera.
 
 Do not run the ground-truth publisher and the perception publisher at the same
 time, because they publish the same `/gap/pose_robot` topic.
@@ -268,13 +272,10 @@ ros2 launch acea_concert detection.launch.py \
   camera_info_topic:=/D435i_camera_front/camera_info
 ```
 
-For the current short black cylindrical filler smoke test, use the deterministic
-RGB-only Variant A frontend:
+The detector uses the deterministic RGB Variant A frontend by default:
 
 ```bash
-ros2 launch acea_concert detection.launch.py \
-  junction_acceptance_mode:=variant_a_rgb \
-  use_depth_gap_gate:=false
+ros2 launch acea_concert detection.launch.py
 ```
 
 Important: `config/detector.yaml` currently sets
@@ -372,263 +373,129 @@ If this transform is missing on the real robot, start the proper
 `robot_state_publisher`, XBot2 description publisher, or a calibrated static TF
 for the wrist camera.
 
-### Perception Smoke Test In Simulation
+### Arm-Camera Detection For Control Tests
 
-This is the current end-to-end command sequence for checking the simulated
-front D435i camera, detector overlay, camera-frame gap plane, and final
-`/gap/pose_robot` output.
+Use this sequence when the controller should consume the detector output from
+the camera mounted on the arm (`camera_F`). The output contract for the
+controller is:
 
-Terminal 1, start Gazebo and the front camera bridges:
+```text
+/gap/pose_robot
+```
+
+Do **not** run `src/gap_pose_publisher.py` at the same time: that is the
+simulation ground-truth publisher and it would publish the same controller topic
+as the perception chain.
+
+Terminal 1, start the robot simulation with XBot2 and robot TF:
 
 ```bash
 cd /home/user/concert_ws
+
 source /opt/ros/jazzy/setup.bash
-source /opt/xbot/setup.sh 2>/dev/null || true
+source /opt/xbot/setup.bash 2>/dev/null || true
+source /opt/xbot/share/xbot_msgs/local_setup.bash
+source /opt/xbot/share/cartesian_interface_ros/local_setup.bash
 source /home/user/concert_ws/install/setup.bash
+
 export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 export __GLX_VENDOR_LIBRARY_NAME=nvidia
 
 ros2 launch acea_concert weld_sim.launch.py \
   gui:=true \
-  xbot2:=false \
+  xbot2:=true \
   rviz:=false \
   realsense:=true \
-  publish_robot_state_tf:=true \
-  start_front_camera_bridges:=true \
-  pipe_gap_m:=0.01 \
-  pipe_z_m:=0.75 \
-  spawn_gap_visual_marker:=true \
-  spawn_gap_front_visual_stripe:=false
+  publish_robot_state_tf:=true
 ```
 
-Terminal 2, start the perception replacement:
+Terminal 2, start the perception chain on the arm camera:
 
 ```bash
 cd /home/user/concert_ws
+
 source /opt/ros/jazzy/setup.bash
+source /opt/xbot/setup.bash 2>/dev/null || true
+source /opt/xbot/share/xbot_msgs/local_setup.bash
+source /opt/xbot/share/cartesian_interface_ros/local_setup.bash
 source /home/user/concert_ws/install/setup.bash
 
-ros2 launch acea_concert detection.launch.py \
-  junction_acceptance_mode:=variant_a_rgb \
-  use_depth_gap_gate:=false
+gz topic -l | grep camera_F
+ros2 topic echo --once --field data /robot_description | grep -c camera_F
+
+pkill -f acea_pipe_junction_node || true
+pkill -f gap_pose_robot_node || true
+
+ros2 launch acea_concert arm_camera_detection.launch.py \
+  detector_start_delay_s:=3.0 \
+  camera_qos_reliability:=reliable
 ```
 
-Terminal 3, inspect the state and outputs:
+Terminal 3, put the arm camera in front of the weld junction:
 
 ```bash
 cd /home/user/concert_ws
+
 source /opt/ros/jazzy/setup.bash
+source /opt/xbot/setup.bash 2>/dev/null || true
+source /opt/xbot/share/xbot_msgs/local_setup.bash
+source /opt/xbot/share/cartesian_interface_ros/local_setup.bash
 source /home/user/concert_ws/install/setup.bash
 
-ros2 topic echo /acea/pipe_junction/status --field data
-ros2 topic echo /acea/pipe_junction/detected
-ros2 topic echo /acea/weld_seam/gap_plane --field data
-ros2 topic echo /gap/pose_robot
+timeout 5 ros2 service call /xbotcore/ros_ctrl/switch std_srvs/srv/SetBool "{data: true}" || true
+
+ros2 run acea_concert home_to_weld_start.py --duration 8.0
 ```
 
-Useful one-shot checks:
+Terminal 4, check that perception is healthy before starting controller logic:
 
 ```bash
-ros2 topic hz /D435i_camera_front/color/image_raw
-ros2 topic hz /D435i_camera_front/depth_image
-ros2 topic echo /acea/pipe_junction/status --field data --once
-ros2 topic echo /acea/weld_seam/gap_plane --field data --once
+cd /home/user/concert_ws
+
+source /opt/ros/jazzy/setup.bash
+source /opt/xbot/setup.bash 2>/dev/null || true
+source /opt/xbot/share/xbot_msgs/local_setup.bash
+source /opt/xbot/share/cartesian_interface_ros/local_setup.bash
+source /home/user/concert_ws/install/setup.bash
+
+ros2 topic echo /acea/pipe_junction/status --once --full-length
+ros2 topic echo /acea/pipe_junction/detected --once
+ros2 topic echo /acea/weld_seam/gap_plane --once --full-length
 ros2 topic echo /gap/pose_robot --once
-ros2 run tf2_ros tf2_echo base_link D435i_camera_front_depth_optical_frame
 ```
 
-To see what the detector is doing, open `rqt_image_view` and select:
+Healthy detection should report:
+
+```text
+detected: true
+detector_accepted: true
+junction_lock_active: true
+gap_plane_available: true
+weld_seam_pose_available: true
+```
+
+Useful live checks:
+
+```bash
+ros2 topic hz /camera_F/color/image_raw
+ros2 topic hz /camera_F/depth_image
+ros2 topic hz /camera_F/camera_info
+ros2 topic hz /acea/pipe_junction/debug/rgb_overlay
+ros2 run tf2_ros tf2_echo base_link camera_F_depth_optical_frame
+```
+
+To inspect the detector visually, open `rqt_image_view` and select:
 
 ```text
 /acea/pipe_junction/debug/rgb_overlay
 ```
 
-The overlay shows the scan/search line while searching and the accepted
-junction line when the detector accepts the gap.
-
-For the default 1 cm marker scene, the expected result is a valid detection and
-a `/gap/pose_robot` message in `base_link`.
-
-Expected successful status:
+Detailed perception smoke tests, duplicate-detector debugging, and
+ground-truth/projected-GT validation are kept in:
 
 ```text
-/acea/pipe_junction/status:
-  detected = true
-  detector_accepted = true
-  state = STOP_AND_LOCALIZE
-  gap_plane_available = true
-  weld_seam_pose_available = true
-
-/gap/pose_robot:
-  header.frame_id = base_link
-```
-
-If `/gap/pose_robot` is empty, debug in this order:
-
-1. Check camera topics:
-   ```bash
-   ros2 topic hz /D435i_camera_front/color/image_raw
-   ros2 topic hz /D435i_camera_front/depth_image
-   ros2 topic hz /D435i_camera_front/camera_info
-   ```
-2. Check detector status:
-   ```bash
-   ros2 topic echo /acea/pipe_junction/status --field data --once
-   ros2 topic echo /acea/pipe_junction/detected --once
-   ```
-3. Check camera-frame gap geometry:
-   ```bash
-   ros2 topic echo /acea/weld_seam/gap_plane --field data --once
-   ```
-4. Check the robot camera TF:
-   ```bash
-   ros2 run tf2_ros tf2_echo base_link D435i_camera_front_depth_optical_frame
-   ```
-
-Do not run `src/gap_pose_publisher.py` together with `detection.launch.py`, as
-both publish `/gap/pose_robot`.
-
-Current validation note: the perception chain publishes
-`/acea/weld_seam/gap_plane` and `/gap/pose_robot` correctly, the bridge
-camera->base_link transform is exact, and the camera->`base_link` extrinsic
-matches the Gazebo camera mount. The earlier ~0.88 m vertical error was traced
-to two perception-side issues: the seam localization was mixing disconnected
-depth components in the same seam column, and the detector was using the old
-Isaac pipe radius (`0.45 m`) instead of the ACEA concert simulation radius
-(`0.10 m`) when lifting the visible surface point to the gap centre. See "Run
-Exactly One Detector" and "Compare Perception Against Ground Truth" below.
-
-### Run Exactly One Detector (No Duplicates)
-
-The single most common failure is **two detectors (or two bridges) running at
-once** — usually an orphaned previous `detection.launch.py` left alive next to a
-new one. Both publish to the same topics, so `ros2 topic echo` interleaves two
-sources: `processed_frame_count` *alternates* (e.g. 2106 <-> 3179), the state
-flips between `SCAN` and `STOP_AND_LOCALIZE`, and config edits look ignored
-because the old instance is still using the old parameters.
-
-Always stop any previous run before relaunching:
-
-```bash
-pkill -f acea_pipe_junction_node ; pkill -f gap_pose_robot_node
-```
-
-Then confirm exactly one of each is live:
-
-```bash
-ros2 node list | grep -c acea_pipe_junction_node      # must print 1
-ros2 topic info /acea/pipe_junction/status            # Publisher count: 1
-ros2 topic info /gap/pose_robot                       # Publisher count: 1
-```
-
-After a rebuild you MUST restart the detector: a still-running node keeps its old
-in-memory parameters. This is why a stale node can sit forever in
-`waiting_for_rgb_depth_sync` even though RGB+depth+camera_info all publish at
-~30 Hz, while a freshly started node loads `use_receive_time_for_sync: true` /
-`sync_slop_s: 1.0` and syncs immediately (`rgb_depth_dt_s ~= 0.0005`).
-
-The detector and bridge now self-protect against this:
-
-- a second instance on the same host refuses to start (file-lock guard) with a
-  clear message; override with `-p allow_duplicate:=true`;
-- every status message carries `node_instance` (`host:pid`), so two publishers
-  are obvious in `ros2 topic echo`;
-- if RGB and depth both flow but never sync on header stamps, the detector
-  switches to receive-time sync automatically (`auto_receive_time_fallback`);
-- `WAITING_FOR_SYNC` status now reports `rgb_hz`, `depth_hz`, `camera_info_hz`,
-  `*_age_s`, `sync_time_source`, configured camera topics, and a human `hint`.
-  If one stream stalls, the reason is explicit (`waiting_for_rgb_stale`,
-  `waiting_for_depth_stale`, or `waiting_for_camera_info_stale`) instead of the
-  generic sync message.
-
-If another machine stays in `WAITING_FOR_SYNC`, do not tune the detector first.
-Read the health fields:
-
-```bash
-ros2 topic echo /acea/pipe_junction/status --field data --once
-ros2 topic info -v /acea/pipe_junction/status
-ros2 topic hz --qos-reliability best_effort /D435i_camera_front/color/image_raw
-ros2 topic hz --qos-reliability best_effort /D435i_camera_front/depth_image
-```
-
-Interpretation:
-
-```text
-waiting_for_rgb_stale
-  The RGB topic/bridge is not delivering fresh frames to this detector, even if
-  another terminal sees an RGB topic. Check topic mismatch, duplicate/stale
-  detector, QoS, or the RGB bridge.
-
-waiting_for_depth_stale
-  Same issue on the depth stream.
-
-Publisher count > 1 on /acea/pipe_junction/status or /detection
-  Two detectors are running; stop one.
-
-rgb_topic/depth_topic in the status differ from the topics tested with ros2 hz
-  The detector is subscribed to different camera topics than the ones being
-  checked.
-```
-
-The simulator normally already publishes the camera TF through the main robot
-launch. Therefore `publish_robot_state_tf` defaults to `false`. Enable it only
-as a fallback if this fails:
-
-```bash
-ros2 run tf2_ros tf2_echo base_link D435i_camera_front_depth_optical_frame
-```
-
-The front D435i camera bridge is intentionally uniform: RGB, depth, and
-CameraInfo are all bridged with `ros_gz_bridge/parameter_bridge`. Avoid mixing
-`ros_gz_image image_bridge` for RGB with `ros_gz_bridge` for depth, because that
-proved more sensitive to container/Gazebo differences across machines.
-
-If you manually move or teleport the pipe/junction in Gazebo while the detector
-is already running, restart the detector afterwards. The visual tracker has
-temporal memory and may reject the new position as a suspicious jump:
-
-```text
-reason = detector_rejected;...;candidate_jump=...
-```
-
-This is expected for manual scene edits; continuous robot/camera motion should
-move the candidate gradually instead.
-
-### Compare Perception Against Ground Truth
-
-Both `gap_pose_publisher.py` (ground truth) and the perception bridge publish
-`/gap/pose_robot`, so never run them on the same topic. To compare, remap the
-ground truth onto a separate topic while perception keeps `/gap/pose_robot`:
-
-```bash
-# perception already running via detection.launch.py -> /gap/pose_robot
-ros2 run acea_concert gap_pose_publisher.py --ros-args -r /gap/pose_robot:=/gap/pose_robot_gt
-ros2 topic echo --once /gap/pose_robot_gt     # ground truth (base_link)
-ros2 topic echo --once /gap/pose_robot        # perception   (base_link)
-```
-
-Measured result with a clean single detector:
-
-```text
-ground truth : x=2.000  y=0.146  z= 0.003
-perception   : x=2.009  y=0.141  z= 0.002
-```
-
-The perception pose now matches the simulation ground truth to smoke-test
-precision. The important fixes were:
-
-1. select the most depth-coherent connected support in the seam column before
-   back-projecting the 3D seam point, instead of mixing disconnected depth
-   regions from the pipe/background;
-2. configure `pipe_radius_m: 0.10` for this package, matching the pipe radius
-   generated by `src/weld_opt.py` / `weld_sim.launch.py`.
-
-If this comparison regresses, verify the extrinsic and the raw gap point with:
-
-```bash
-ros2 run tf2_ros tf2_echo base_link D435i_camera_front_depth_optical_frame
-# translation ~[0.406, 0.018, -0.066], matches the Gazebo camera mount
-ros2 topic echo --once --field data /acea/weld_seam/gap_plane   # gap_plane_center_camera_xyz_m
+PIPE_JUNCTION_VALIDATION.md
+src/detection/README.md
 ```
 
 ### Gravity Compensation

@@ -44,7 +44,7 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "junction_acceptance_mode",
-            default_value="rgb_depth",
+            default_value="variant_a_rgb",
             description="Detector acceptance mode: rgb_depth, rgb_temporal, or variant_a_rgb.",
         ),
         DeclareLaunchArgument(
@@ -87,6 +87,11 @@ def generate_launch_description() -> LaunchDescription:
             default_value="5.0",
             description="Minimum interval before recreating stale camera subscriptions after a bridge restart.",
         ),
+        DeclareLaunchArgument(
+            "camera_qos_reliability",
+            default_value="best_effort",
+            description="Camera subscription QoS reliability: best_effort or reliable.",
+        ),
 
         Node(
             package="acea_concert",
@@ -105,6 +110,7 @@ def generate_launch_description() -> LaunchDescription:
                 {"use_receive_time_for_sync": LaunchConfiguration("use_receive_time_for_sync")},
                 {"stream_stale_s": LaunchConfiguration("stream_stale_s")},
                 {"stale_subscription_reset_s": LaunchConfiguration("stale_subscription_reset_s")},
+                {"camera_qos_reliability": LaunchConfiguration("camera_qos_reliability")},
             ],
         ),
         Node(

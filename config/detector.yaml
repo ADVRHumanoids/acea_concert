@@ -19,11 +19,34 @@
     use_receive_time_for_sync: true
     stream_stale_s: 2.0
     stale_subscription_reset_s: 5.0
-    junction_acceptance_mode: rgb_depth
+    # Variant A scores the thin dark junction in the RGB strip; depth is still
+    # used first to isolate the pipe surface from floor/background and then for
+    # the weld gap-plane backprojection.
+    junction_acceptance_mode: variant_a_rgb
     use_depth_gap_gate: true
     use_yolo_seg_frontend: false
     allow_nominal_intrinsics_fallback: true
     variant_a_min_vertical_run_px: 8
+    variant_a_orientation_search_deg: 25.0
+    variant_a_orientation_search_step_deg: 2.0
+    enable_junction_lock: true
+    junction_lock_max_missed_frames: 12
+    junction_lock_search_radius_px: 180
+    junction_lock_min_reacquire_z: 3.0
+    junction_lock_min_reacquire_contrast: 0.006
+    junction_lock_confidence_decay: 0.96
+    junction_lock_min_confidence: 0.25
+    enable_opencv_klt_tracking: true
+    klt_max_features: 80
+    klt_feature_radius_px: 80
+    klt_min_valid_points: 4
+    klt_quality_level: 0.01
+    klt_min_distance_px: 5.0
+    klt_block_size_px: 7
+    klt_win_size_px: 21
+    klt_max_level: 3
+    klt_term_count: 20
+    klt_term_eps: 0.03
     # Radius of the pipe used to lift the visible seam surface point to the
     # centre of the gap plane. Keep this aligned with src/weld_opt.py /
     # weld_sim.launch.py; ACEA concert simulation currently uses 0.10 m.

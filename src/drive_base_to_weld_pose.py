@@ -134,11 +134,29 @@ class DriveBaseToWeldPose(Node):
             self._args.max_yaw_speed,
         ))
 
+        self._log_status(xy_error_base, yaw_error, linear_cmd, yaw_cmd)
+
         twist = Twist()
         twist.linear.x = float(linear_cmd[0])
         twist.linear.y = float(linear_cmd[1])
         twist.angular.z = yaw_cmd
         self._pub.publish(twist)
+
+    def _log_status(self, xy_error_base: np.ndarray, yaw_error: float,
+                    linear_cmd: np.ndarray, yaw_cmd: float) -> None:
+        if self._args.status_log_period <= 0.0:
+            return
+
+        xy_error_norm = float(np.linalg.norm(xy_error_base))
+        self.get_logger().info(
+            "pose error: "
+            f"distance={xy_error_norm:.3f} m "
+            f"(dx={xy_error_base[0]:+.3f}, dy={xy_error_base[1]:+.3f}), "
+            f"yaw={math.degrees(yaw_error):+.1f} deg | "
+            f"cmd=({linear_cmd[0]:+.3f}, {linear_cmd[1]:+.3f}, "
+            f"{yaw_cmd:+.3f})",
+            throttle_duration_sec=self._args.status_log_period,
+        )
 
     def _publish_zero(self) -> None:
         self._pub.publish(Twist())
@@ -174,6 +192,15 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--max-yaw-speed", type=float, default=0.1)
     parser.add_argument("--tolerance-xy", type=float, default=0.01)
     parser.add_argument("--tolerance-yaw", type=float, default=0.01)
+    parser.add_argument(
+        "--status-log-period",
+        type=float,
+        default=1.0,
+        help=(
+            "Seconds between throttled status logs. Set <= 0 to disable "
+            "pose/error/command logging."
+        ),
+    )
     parser.add_argument("--timeout", type=float, default=45.0)
     parser.add_argument("--stop-ticks", type=int, default=10)
 
@@ -190,6 +217,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--tolerance-xy must be non-negative")
     if args.tolerance_yaw < 0.0:
         parser.error("--tolerance-yaw must be non-negative")
+    if args.status_log_period < 0.0:
+        parser.error("--status-log-period must be non-negative")
     if args.timeout <= 0.0:
         parser.error("--timeout must be positive")
     if args.stop_ticks < 1:

@@ -41,6 +41,7 @@ Command pipeline:
 ```bash
 cd /home/user/concert_ws/src/acea_concert
 python3 src/weld_opt.py
+python3 src/plan_homing_from_mat.py
 python3 src/replayer.py
 rviz2 -d rviz/rviz_config.rviz
 ```
@@ -59,6 +60,13 @@ mat_files/weld_concert.mat
 ```
 
 The MAT file contains the optimized joint trajectory, the pipe/gap geometry, and the weld trajectory expressed in the gap frame. The online controller expects this file to exist before starting the simulation.
+
+Optionally plan a collision-aware homing trajectory and save it back into the MAT file as `q_homing`:
+
+```bash
+cd /home/user/concert_ws/src/acea_concert
+python3 src/plan_homing_from_mat.py
+```
 
 Optionally replay the optimized trajectory:
 
@@ -95,6 +103,12 @@ ros2 launch acea_concert weld_sim.launch.py
 ```
 
 This launches the robot simulation and spawns the two pipe halves using the geometry stored in `mat_files/weld_concert.mat`.
+
+To use a different optimization result, pass `mat_file`. To start with the gap at the optimized pose relative to the robot, add `optimized_start:=true`:
+
+```bash
+ros2 launch acea_concert weld_sim.launch.py mat_file:=mat_files/weld_concert.mat optimized_start:=true
+```
 
 ### XBot GUI
 
@@ -258,8 +272,9 @@ base_R_ee_des = base_R_gap * gap_R_ee_des
 ## Main Files
 
 - `src/weld_opt.py`: offline trajectory optimization and MAT file generation.
+- `src/plan_homing_from_mat.py`: adds a collision-aware `q_homing` trajectory to a MAT file.
 - `src/replayer.py`: replay and RViz visualization of the optimized trajectory.
-- `launch/weld_sim.launch.py`: simulation launch file.
+- `launch/weld_sim.launch.py`: simulation launch file; accepts `mat_file` and `optimized_start`.
 - `src/gap_pose_publisher.py`: simulation ground-truth gap pose publisher.
 - `src/gravity_comp_node.py`: gravity compensation node.
 - `src/home_to_weld_start.py`: moves weld joints to trajectory node 0.

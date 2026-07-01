@@ -20,4 +20,10 @@ RUN forest grow horizon --clone-protocol https -j7
 
 RUN forest grow concert_description --clone-protocol https -j7
 
+RUN forest grow cartesian_interface --clone-protocol https -j7
+
+RUN forest grow centauro_cartesio --clone-protocol https -j7
+
+RUN forest grow xbot2_gui_server --clone-protocol https -j7
+
 RUN mkdir -p ~/patch

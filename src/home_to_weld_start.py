@@ -4,13 +4,16 @@
 import argparse
 import sys
 from pathlib import Path
-from time import sleep
+from time import monotonic, sleep
 
 import numpy as np
 import rclpy
 from rcl_interfaces.srv import GetParameters
+from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,
+                       ReliabilityPolicy)
 from rclpy.utilities import remove_ros_args
 from scipy.io import loadmat
+from std_msgs.msg import String
 
 from xbot2_interface import pyxbot2_interface as xbi
 
@@ -26,14 +29,85 @@ WELD_JOINTS = (
 VIRTUAL_JOINTS = {"universe", "reference"}
 
 
-def fetch_robot_description(node_name: str):
+def _fetch_robot_description_from_topics(
+    node_name: str,
+    timeout_s: float = 20.0,
+) -> tuple[str, str]:
+    """Read URDF/SRDF from transient-local description topics.
+
+    Recent XBot2/Gazebo bringup publishes the robot descriptions as latched
+    topics but does not always expose a /robot_description_publisher parameter
+    service. Prefer the topics so homing works in that setup.
+    """
+    if not rclpy.ok():
+        rclpy.init()
+
+    node = rclpy.create_node(node_name)
+    got: dict[str, str | None] = {"urdf": None, "srdf": None}
+    qos = QoSProfile(depth=1)
+    qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+    qos.reliability = ReliabilityPolicy.RELIABLE
+    qos.history = HistoryPolicy.KEEP_LAST
+
+    subscriptions = [
+        node.create_subscription(
+            String,
+            "/robot_description",
+            lambda msg: got.update(urdf=msg.data),
+            qos,
+        ),
+        node.create_subscription(
+            String,
+            "/robot_description_semantic",
+            lambda msg: got.update(srdf=msg.data),
+            qos,
+        ),
+        node.create_subscription(
+            String,
+            "/xbotcore/robot_description",
+            lambda msg: got.update(urdf=msg.data),
+            qos,
+        ),
+        node.create_subscription(
+            String,
+            "/xbotcore/robot_description_semantic",
+            lambda msg: got.update(srdf=msg.data),
+            qos,
+        ),
+    ]
+    del subscriptions  # The node owns the subscriptions.
+
+    try:
+        start = monotonic()
+        while rclpy.ok() and (got["urdf"] is None or got["srdf"] is None):
+            if monotonic() - start > timeout_s:
+                missing = [
+                    name
+                    for name, value in (("urdf", got["urdf"]), ("srdf", got["srdf"]))
+                    if value is None
+                ]
+                raise RuntimeError(
+                    "timed out reading robot_description topics; "
+                    f"missing={missing}"
+                )
+            rclpy.spin_once(node, timeout_sec=0.2)
+        assert got["urdf"] is not None and got["srdf"] is not None
+        return got["urdf"], got["srdf"]
+    finally:
+        node.destroy_node()
+
+
+def _fetch_robot_description_from_params(
+    node_name: str,
+    timeout_s: float = 5.0,
+) -> tuple[str, str]:
     if not rclpy.ok():
         rclpy.init()
 
     node = rclpy.create_node(node_name)
     client = node.create_client(
         GetParameters, "/robot_description_publisher/get_parameters")
-    if not client.wait_for_service(timeout_sec=15.0):
+    if not client.wait_for_service(timeout_sec=timeout_s):
         node.destroy_node()
         raise RuntimeError(
             "/robot_description_publisher not available. Is the simulation running?")
@@ -41,7 +115,7 @@ def fetch_robot_description(node_name: str):
     req = GetParameters.Request()
     req.names = ["robot_description", "robot_description_semantic"]
     future = client.call_async(req)
-    rclpy.spin_until_future_complete(node, future, timeout_sec=15.0)
+    rclpy.spin_until_future_complete(node, future, timeout_sec=timeout_s)
     node.destroy_node()
 
     if future.result() is None:
@@ -49,6 +123,17 @@ def fetch_robot_description(node_name: str):
 
     vals = future.result().values
     return vals[0].string_value, vals[1].string_value
+
+
+def fetch_robot_description(node_name: str) -> tuple[str, str]:
+    try:
+        return _fetch_robot_description_from_topics(f"{node_name}_topics")
+    except Exception as topic_exc:
+        print(
+            "[home_to_weld_start] topic robot_description read failed; "
+            f"trying legacy parameter service: {topic_exc}"
+        )
+        return _fetch_robot_description_from_params(f"{node_name}_params")
 
 
 def load_home_map(mat_file: Path):

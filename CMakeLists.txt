@@ -5,6 +5,17 @@ find_package(ament_cmake REQUIRED)
 
 # --- Python scripts (runnable via ros2 run or directly) ---
 install(PROGRAMS
+  scripts/acea_camera_recenter_cartesio.py
+  scripts/acea_camera_joint_response_probe.py
+  scripts/acea_camera_joint_recenter.py
+  scripts/spawn_third_person_camera.py
+  scripts/record_image_video.py
+  scripts/record_pipe_junction_sequence.py
+  scripts/analyze_pipe_junction_sequence.py
+  scripts/acea_pipe_component_selection_test.py
+  scripts/run_drive_recording_with_third_person.py
+  scripts/acea_gaze_lock_wrist.py
+  scripts/acea_gaze_lock_offline_test.py
   scripts/apply_gz_wrench.py
   scripts/omnisteering_sine_command.py
   src/drive_base_to_weld_pose.py

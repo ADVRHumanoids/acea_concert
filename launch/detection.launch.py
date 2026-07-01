@@ -11,7 +11,6 @@ acea_concert already consumes:
 
 Usage:
     ros2 launch acea_concert detection.launch.py
-    ros2 launch acea_concert detection.launch.py use_yolo_seg_frontend:=true
 
 It does NOT start the simulator or the camera bridge; point the detector's
 rgb/depth/camera_info topics at whatever publishes them (see config/detector.yaml).
@@ -38,19 +37,9 @@ def generate_launch_description() -> LaunchDescription:
             description="Parameter YAML for the gap_pose_robot publisher.",
         ),
         DeclareLaunchArgument(
-            "use_yolo_seg_frontend",
-            default_value="false",
-            description="Enable the YOLO-seg detector frontend (needs the YOLO venv).",
-        ),
-        DeclareLaunchArgument(
             "junction_acceptance_mode",
             default_value="variant_a_rgb",
-            description="Detector acceptance mode: rgb_depth, rgb_temporal, or variant_a_rgb.",
-        ),
-        DeclareLaunchArgument(
-            "use_depth_gap_gate",
-            default_value="true",
-            description="Use the thin depth-gap gate for junction acceptance when supported by the selected mode.",
+            description="Detector acceptance mode: variant_a_rgb or rgb_temporal.",
         ),
         DeclareLaunchArgument(
             "rgb_topic",
@@ -100,9 +89,7 @@ def generate_launch_description() -> LaunchDescription:
             output="screen",
             parameters=[
                 LaunchConfiguration("detector_config"),
-                {"use_yolo_seg_frontend": LaunchConfiguration("use_yolo_seg_frontend")},
                 {"junction_acceptance_mode": LaunchConfiguration("junction_acceptance_mode")},
-                {"use_depth_gap_gate": LaunchConfiguration("use_depth_gap_gate")},
                 {"rgb_topic": LaunchConfiguration("rgb_topic")},
                 {"depth_topic": LaunchConfiguration("depth_topic")},
                 {"camera_info_topic": LaunchConfiguration("camera_info_topic")},

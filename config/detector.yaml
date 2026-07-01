@@ -19,12 +19,10 @@
     use_receive_time_for_sync: true
     stream_stale_s: 2.0
     stale_subscription_reset_s: 5.0
-    # Variant A scores the thin dark junction in the RGB strip; depth is still
-    # used first to isolate the pipe surface from floor/background and then for
-    # the weld gap-plane backprojection.
+    # Variant A scores the thin dark junction in the RGB strip. Depth is still
+    # used to isolate the pipe from floor/background, reject obvious pipe ends,
+    # and back-project the weld gap-plane.
     junction_acceptance_mode: variant_a_rgb
-    use_depth_gap_gate: true
-    use_yolo_seg_frontend: false
     allow_nominal_intrinsics_fallback: true
     variant_a_min_vertical_run_px: 8
     variant_a_orientation_search_deg: 25.0

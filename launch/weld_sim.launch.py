@@ -7,14 +7,16 @@ Usage:
     ros2 launch acea_concert weld_sim.launch.py gui:=false
     ros2 launch acea_concert weld_sim.launch.py xbot2:=false
     ros2 launch acea_concert weld_sim.launch.py rviz:=true
+    ros2 launch acea_concert weld_sim.launch.py mat_file:=mat_files/weld_concert.mat optimized_start:=true
 """
 
 import os
 import math
 from pathlib import Path
-import sys
 
+import numpy as np
 import scipy
+from scipy.spatial.transform import Rotation as R
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -28,29 +30,39 @@ PATH_TO_CONCERT_WS = Path("/home/user/concert_ws")
 PATH_TO_ACEA_CONCERT = PATH_TO_CONCERT_WS / "src" / "acea_concert"
 MODULAR_DESCRIPTION = str(PATH_TO_ACEA_CONCERT / "src" / "modular" / "concert_with_torch.py")
 GZ_RESOURCE_PATH = str(PATH_TO_CONCERT_WS / "install" / "share")
-MAT_FILE = PATH_TO_ACEA_CONCERT / "mat_files" / "weld_concert.mat"
+DEFAULT_MAT_FILE = PATH_TO_ACEA_CONCERT / "mat_files" / "weld_concert.mat"
 
-if not MAT_FILE.exists():
-  print(f"File not found: {MAT_FILE}")
-  sys.exit(1)
 
-# ── Pipe geometry & placement from weld_opt MAT file ────────────────────────
-matdata = scipy.io.loadmat(str(MAT_FILE))
-init_pos_robot = matdata['initial_robot_pose'][0]
-pipe_center = matdata['pos_center_pipe'].reshape(3)
+def _mat_vector(matdata, name, default=None):
+    if name in matdata:
+        return np.asarray(matdata[name], dtype=float).reshape(-1)
+    if default is not None:
+        return np.asarray(default, dtype=float)
+    raise KeyError(f"MAT file is missing required field: {name}")
 
-PIPE_RADIUS = float(matdata['radius_pipe'].reshape(-1)[0])
-PIPE_TOTAL_LENGTH = float(matdata['length_pipe'].reshape(-1)[0])
-PIPE_GAP = float(matdata['pipe_gap'].reshape(-1)[0])
-PIPE_HALF_LENGTH = (PIPE_TOTAL_LENGTH - PIPE_GAP) / 2.0
-PIPE_X = float(pipe_center[0])
-PIPE_Y = float(pipe_center[1])
-PIPE_Z = float(pipe_center[2])
 
-# Derived: centre of each half = half_length/2 + half_gap.
-_pipe_y = PIPE_HALF_LENGTH / 2.0 + PIPE_GAP / 2.0
-# ─────────────────────────────────────────────────────────────────────────────
-PIPE_SDF_TEMPLATE = """<?xml version="1.0" ?>
+def _resolve_mat_file(raw_path: str) -> Path:
+    path = Path(os.path.expandvars(os.path.expanduser(raw_path)))
+    if not path.is_absolute():
+        path = PATH_TO_ACEA_CONCERT / path
+    return path
+
+
+def _load_mat_file(context):
+    mat_file = _resolve_mat_file(LaunchConfiguration("mat_file").perform(context))
+    if not mat_file.exists():
+        raise FileNotFoundError(f"File not found: {mat_file}")
+    return mat_file, scipy.io.loadmat(str(mat_file))
+
+
+def _pipe_geometry_from_mat(matdata):
+    pipe_center = _mat_vector(matdata, "pos_center_pipe")
+    pipe_radius = float(_mat_vector(matdata, "radius_pipe")[0])
+    pipe_total_length = float(_mat_vector(matdata, "length_pipe")[0])
+    pipe_gap = float(_mat_vector(matdata, "pipe_gap")[0])
+    pipe_half_length = (pipe_total_length - pipe_gap) / 2.0
+
+    pipe_sdf_template = """<?xml version="1.0" ?>
 <sdf version="1.6">
   <model name="{{name}}">
     <static>true</static>
@@ -78,33 +90,82 @@ PIPE_SDF_TEMPLATE = """<?xml version="1.0" ?>
       </collision>
     </link>
   </model>
-</sdf>""".format(radius=PIPE_RADIUS, length=PIPE_HALF_LENGTH)
+</sdf>""".format(radius=pipe_radius, length=pipe_half_length)
 
-PIPE_SDF_LEFT  = PIPE_SDF_TEMPLATE.format(name="weld_pipe_left")
-PIPE_SDF_RIGHT = PIPE_SDF_TEMPLATE.format(name="weld_pipe_right")
+    return {
+        "x": float(pipe_center[0]),
+        "y": float(pipe_center[1]),
+        "z": float(pipe_center[2]),
+        "half_center_offset": pipe_half_length / 2.0 + pipe_gap / 2.0,
+        "sdf_left": pipe_sdf_template.format(name="weld_pipe_left"),
+        "sdf_right": pipe_sdf_template.format(name="weld_pipe_right"),
+    }
+
+
+def _optimized_gap_pose_from_mat(matdata):
+    robot_pose = _mat_vector(matdata, "initial_robot_pose")
+    if robot_pose.size < 7:
+        raise ValueError("initial_robot_pose must contain xyz + quaternion xyzw")
+
+    world_R_base = R.from_quat(robot_pose[3:7]).as_matrix()
+    if "pos_center_pipe_base" in matdata:
+        gap_base = _mat_vector(matdata, "pos_center_pipe_base")
+    else:
+        pipe_center = _mat_vector(matdata, "pos_center_pipe")
+        gap_base = world_R_base.T @ (pipe_center - robot_pose[:3])
+
+    world_R_gap = np.column_stack([
+        _mat_vector(matdata, "pipe_x_axis_world", [1.0, 0.0, 0.0]),
+        _mat_vector(matdata, "pipe_y_axis_world", [0.0, 1.0, 0.0]),
+        _mat_vector(matdata, "pipe_z_axis_world", [0.0, 0.0, 1.0]),
+    ])
+    base_R_gap = world_R_base.T @ world_R_gap
+    pipe_y_axis_yaw = math.atan2(
+        float(base_R_gap[1, 0]),
+        float(base_R_gap[0, 0]),
+    )
+    return float(gap_base[0]), float(gap_base[1]), pipe_y_axis_yaw
 
 
 def _float_launch_config(context, name):
     return float(LaunchConfiguration(name).perform(context))
 
 
-def _spawn_pipe_actions(context, *args, **kwargs):
-    pipe_offset_x = _float_launch_config(context, "pipe_offset_x")
-    pipe_offset_y = _float_launch_config(context, "pipe_offset_y")
-    pipe_y_axis_yaw = _float_launch_config(context, "pipe_y_axis_yaw")
+def _bool_launch_config(context, name):
+    return LaunchConfiguration(name).perform(context).strip().lower() in (
+        "1", "true", "yes", "on")
 
-    # The sim robot is spawned at world XY = 0. Express the optimized pipe
-    # position in this nominal robot-start frame.
-    nominal_robot_x = PIPE_X - pipe_offset_x
-    nominal_robot_y = PIPE_Y - pipe_offset_y
-    pipe_spawn_x = PIPE_X - nominal_robot_x
-    pipe_spawn_y = PIPE_Y - nominal_robot_y
+
+def _spawn_pipe_actions(context, *args, **kwargs):
+    mat_file, matdata = _load_mat_file(context)
+    pipe = _pipe_geometry_from_mat(matdata)
+
+    if _bool_launch_config(context, "optimized_start"):
+        pipe_spawn_x, pipe_spawn_y, pipe_y_axis_yaw = (
+            _optimized_gap_pose_from_mat(matdata))
+        print(
+            "[weld_sim] Starting at optimized relative gap pose from "
+            f"{mat_file}: x={pipe_spawn_x:.3f}, y={pipe_spawn_y:.3f}, "
+            f"yaw={pipe_y_axis_yaw:.3f}"
+        )
+    else:
+        pipe_offset_x = _float_launch_config(context, "pipe_offset_x")
+        pipe_offset_y = _float_launch_config(context, "pipe_offset_y")
+        pipe_y_axis_yaw = _float_launch_config(context, "pipe_y_axis_yaw")
+
+        # The sim robot is spawned at world XY = 0. Express the optimized pipe
+        # position in this nominal robot-start frame.
+        nominal_robot_x = pipe["x"] - pipe_offset_x
+        nominal_robot_y = pipe["y"] - pipe_offset_y
+        pipe_spawn_x = pipe["x"] - nominal_robot_x
+        pipe_spawn_y = pipe["y"] - nominal_robot_y
+
     pipe_y_axis = (
         -math.sin(pipe_y_axis_yaw),
         math.cos(pipe_y_axis_yaw),
     )
-    pipe_offset_x = _pipe_y * pipe_y_axis[0]
-    pipe_offset_y = _pipe_y * pipe_y_axis[1]
+    half_offset_x = pipe["half_center_offset"] * pipe_y_axis[0]
+    half_offset_y = pipe["half_center_offset"] * pipe_y_axis[1]
 
     return [
         # Spawn two pipe halves with a small gap. With the default nominal frame
@@ -118,10 +179,10 @@ def _spawn_pipe_actions(context, *args, **kwargs):
                     executable="create",
                     name="spawn_weld_pipe_left",
                     arguments=[
-                        "-string", PIPE_SDF_LEFT,
-                        "-x", f"{pipe_spawn_x + pipe_offset_x:.6f}",
-                        "-y", f"{pipe_spawn_y + pipe_offset_y:.6f}",
-                        "-z", str(PIPE_Z),
+                        "-string", pipe["sdf_left"],
+                        "-x", f"{pipe_spawn_x + half_offset_x:.6f}",
+                        "-y", f"{pipe_spawn_y + half_offset_y:.6f}",
+                        "-z", f"{pipe['z']:.6f}",
                         "-R", "1.5708",
                         "-P", "0.0",
                         "-Y", f"{pipe_y_axis_yaw:.6f}",
@@ -138,10 +199,10 @@ def _spawn_pipe_actions(context, *args, **kwargs):
                     executable="create",
                     name="spawn_weld_pipe_right",
                     arguments=[
-                        "-string", PIPE_SDF_RIGHT,
-                        "-x", f"{pipe_spawn_x - pipe_offset_x:.6f}",
-                        "-y", f"{pipe_spawn_y - pipe_offset_y:.6f}",
-                        "-z", str(PIPE_Z),
+                        "-string", pipe["sdf_right"],
+                        "-x", f"{pipe_spawn_x - half_offset_x:.6f}",
+                        "-y", f"{pipe_spawn_y - half_offset_y:.6f}",
+                        "-z", f"{pipe['z']:.6f}",
                         "-R", "1.5708",
                         "-P", "0.0",
                         "-Y", f"{pipe_y_axis_yaw:.6f}",
@@ -169,6 +230,10 @@ def generate_launch_description():
         DeclareLaunchArgument("rviz",      default_value="false", description="Launch RViz"),
         DeclareLaunchArgument("realsense", default_value="true", description="Include RealSense"),
         DeclareLaunchArgument("velodyne",  default_value="false", description="Include Velodyne"),
+        DeclareLaunchArgument("mat_file", default_value=str(DEFAULT_MAT_FILE),
+                              description="Optimization MAT file used for pipe geometry and optimized_start"),
+        DeclareLaunchArgument("optimized_start", default_value="false",
+                              description="Place the gap at the optimized pose relative to the robot from mat_file"),
         DeclareLaunchArgument("pipe_offset_x", default_value="2.0",
                               description="Pipe center X in the robot nominal start frame [m]"),
         DeclareLaunchArgument("pipe_offset_y", default_value="0.0",

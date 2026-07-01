@@ -142,11 +142,77 @@ ros2 launch acea_concert weld_sim.launch.py
 
 This launches the robot simulation and spawns the two pipe halves using the geometry stored in `mat_files/weld_concert.mat`.
 
-To use a different optimization result, pass `mat_file`. To start with the gap at the optimized pose relative to the robot, add `optimized_start:=true`:
+Useful simulation launch arguments:
+
+```text
+gui:=false                         run Gazebo headless
+xbot2:=false                       start only Gazebo/robot/cameras, no XBot2
+rviz:=false                        do not start RViz
+realsense:=false                   disable the D435i cameras
+start_front_camera_bridges:=false  do not bridge front D435i RGB/depth/camera_info from Gazebo to ROS
+publish_robot_state_tf:=true       fallback-only base_link -> D435i camera TF publisher
+pipe_gap_m:=0.01                   gap between the two pipe halves
+pipe_z_m:=0.75                     pipe height used for the camera-facing debug scene
+spawn_gap_visual_marker:=true      add a short black cylindrical filler in the junction
+gap_visual_marker_width_m:=-1.0    <=0 means filler length follows pipe_gap_m
+spawn_gap_black_backdrop:=false    optional black panel behind the pipe
+```
+
+Current perception-debug scene:
 
 ```bash
-ros2 launch acea_concert weld_sim.launch.py mat_file:=mat_files/weld_concert.mat optimized_start:=true
+ros2 launch acea_concert weld_sim.launch.py
 ```
+
+The current defaults are:
+
+```text
+xbot2 = true
+realsense = true
+start_front_camera_bridges = true
+publish_robot_state_tf = false
+pipe_gap_m = 0.01
+pipe_z_m = 0.75
+spawn_gap_visual_marker = true
+spawn_gap_black_backdrop = false
+```
+
+`weld_sim.launch.py` intentionally uses the ACEA world:
+
+```text
+world/empty_world_no_ros2_camera_system.sdf
+```
+
+This is the standard CONCERT empty world with the unavailable
+`Ros2CameraSystem` plugin removed. The front D435i ROS topics are bridged
+explicitly by this launch file instead:
+
+```text
+/D435i_camera_front/color/image_raw
+/D435i_camera_front/depth_image
+/D435i_camera_front/camera_info
+```
+
+If you see this error, the old `concert_gazebo` world is being used instead of
+the ACEA world, or the package was not rebuilt/sourced after editing:
+
+```text
+Failed to load system plugin [Ros2CameraSystem]
+```
+
+This creates a 1 cm junction with a short black cylindrical filler at the gap.
+It is meant as a stable perception/debug scene where the robot-mounted D435i
+camera sees a full dark junction band, not an external camera view. For a
+narrower target gap:
+
+```bash
+ros2 launch acea_concert weld_sim.launch.py \
+  gui:=false \
+  pipe_gap_m:=0.003
+```
+
+The short black cylindrical filler fills the actual junction volume used by the
+RGB detector smoke test.
 
 ### XBot GUI
 
@@ -318,7 +384,6 @@ If this transform is missing in simulation, launch `weld_sim.launch.py` with:
 
 ```text
 publish_robot_state_tf:=true
-realsense:=true
 ```
 
 If this transform is missing on the real robot, start the proper
@@ -339,7 +404,7 @@ Do **not** run `src/gap_pose_publisher.py` at the same time: that is the
 simulation ground-truth publisher and it would publish the same controller topic
 as the perception chain.
 
-Terminal 1, start the robot simulation with XBot2 and robot TF:
+Terminal 1, start the robot simulation with XBot2 and the arm camera bridges:
 
 ```bash
 cd /home/user/concert_ws
@@ -353,12 +418,7 @@ source /home/user/concert_ws/install/setup.bash
 export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 export __GLX_VENDOR_LIBRARY_NAME=nvidia
 
-ros2 launch acea_concert weld_sim.launch.py \
-  gui:=true \
-  xbot2:=true \
-  rviz:=false \
-  realsense:=true \
-  publish_robot_state_tf:=true
+ros2 launch acea_concert weld_sim.launch.py
 ```
 
 Terminal 2, start the perception chain on the arm camera:

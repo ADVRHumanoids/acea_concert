@@ -93,8 +93,7 @@ except Exception as exc:  # pragma: no cover - allows offline import/test withou
     Bool = CameraInfo = Image = String = PoseStamped = Marker = MarkerArray = None  # type: ignore
 
 # Variant A deterministic RGB-only seam detector (black top-hat + vertical-run
-# coherence, no depth). Optional frontend selected by junction_acceptance_mode
-# == "variant_a_rgb". Imported from the same scripts dir (project convention).
+# coherence, no depth). Imported from the same scripts dir (project convention).
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 try:
     from acea_seam_detector import detect_seam as _variant_a_detect_seam
@@ -137,6 +136,11 @@ try:
 except Exception:  # pragma: no cover - geometry helper is optional at import time
     WeldSeamFrame = None  # type: ignore
     seam_frame_from_axis_and_surface = None  # type: ignore
+
+try:
+    from acea_alignment.pipe_pose import fit_pipe_pose as _fit_pipe_pose
+except Exception:  # pragma: no cover - robust component validation is optional
+    _fit_pipe_pose = None  # type: ignore
 
 # RViz marker constants (visualization_msgs/Marker). Defined as literals so the
 # values are available even when the message class is unavailable offline
@@ -444,24 +448,6 @@ class TemporalChangeResult:
 
 
 @dataclass
-class YoloSegCandidate:
-    enabled: bool = False
-    available: bool = False
-    detected: bool = False
-    accepted: bool = False
-    confidence: float | None = None
-    mask_area_px: int = 0
-    mask_area_fraction: float = 0.0
-    strip_overlap_px: int = 0
-    candidate_x_strip_px: int | None = None
-    candidate_x_rotated_px: int | None = None
-    candidate_x_image_px: int | None = None
-    class_name: str | None = None
-    reason: str = "disabled"
-    mask: np.ndarray | None = None
-
-
-@dataclass
 class SeamResult:
     candidate_x_strip_px: int
     candidate_x_rotated_px: int
@@ -476,19 +462,13 @@ class SeamResult:
     rgb_dark_score: float
     rgb_local_contrast_score: float
     rgb_dark_threshold_used: float
-    weak_rgb_depth_supported: bool
     rgb_dark_accepted: bool
     depth_gap_score: float
     depth_gap_accepted: bool
     depth_gap_raw_accepted: bool
     depth_gap_score_plausible: bool
-    depth_gap_threshold_used_m: float
-    min_depth_gap_score_m: float
-    max_depth_gap_score_m: float
     depth_gap_depth_jump_m: float
     depth_gap_coverage_drop: float
-    yolo_weak_depth_gap_supported: bool
-    yolo_weak_depth_gap_threshold_m: float
     negative_gate_reason: str
     local_candidate_accepted: bool
     temporal_change_score: float
@@ -499,19 +479,6 @@ class SeamResult:
     temporal_reference_ready: bool
     temporal_reference_frame_count: int
     temporal_change_reason: str
-    yolo_seg_enabled: bool
-    yolo_seg_available: bool
-    yolo_seg_detected: bool
-    yolo_seg_confidence: float | None
-    yolo_seg_mask_area_px: int
-    yolo_seg_mask_area_fraction: float
-    yolo_seg_strip_overlap_px: int
-    yolo_seg_candidate_x_strip_px: int | None
-    yolo_seg_candidate_x_rotated_px: int | None
-    yolo_seg_candidate_x_image_px: int | None
-    yolo_seg_class_name: str | None
-    yolo_seg_reason: str
-    yolo_seg_mask: np.ndarray | None
     junction_acceptance_mode: str
     variant_a_orientation_deg: float
     rgb_temporal_accepted: bool
@@ -537,7 +504,6 @@ class SeamResult:
     klt_dx_px: float
     klt_predicted_x_strip_px: float | None
     pipe_end_rejected: bool
-    depth_gap_used_for_acceptance: bool
     accepted: bool
     edge_margin_px: int
     crop_xyxy: list[int]
@@ -556,197 +522,6 @@ class LocalizationResult:
     visible_surface_center_xyz_m: np.ndarray | None
     pipe_center_estimate_xyz_m: np.ndarray | None
     support_pixel_count: int
-
-
-class YoloSegFrontend:
-    """Lazy optional Ultralytics YOLO-seg adapter.
-
-    The adapter is deliberately defensive: if Ultralytics or the model cannot be
-    loaded, the detector keeps running and reports a rejected YOLO candidate
-    instead of crashing the ROS node.
-    """
-
-    def __init__(self, params: dict[str, Any]):
-        self.params = params
-        self.model: Any | None = None
-        self.yolo_class: Any | None = None
-        self.load_error: str | None = None
-        self.device_override: str | None = None
-
-    def _candidate_site_packages(self) -> list[Path]:
-        configured = str(self.params.get("yolo_python_site_packages", "")).strip()
-        candidates: list[Path] = []
-        if configured:
-            candidates.append(Path(configured))
-
-        common_roots = [
-            Path.cwd(),
-            Path("/workspace/iit-concert-ros-pkg"),
-            Path("/home/user/xbot2_ws/src/iit-concert-ros-pkg"),
-            Path(__file__).resolve().parents[2],
-        ]
-        seen: set[str] = set()
-        for root in common_roots:
-            for path in sorted((root / ".venv-yolo" / "lib").glob("python*/site-packages")):
-                key = str(path)
-                if key not in seen:
-                    seen.add(key)
-                    candidates.append(path)
-        return candidates
-
-    def _prepare_pythonpath(self) -> None:
-        config_dir_text = str(self.params.get("yolo_config_dir", "")).strip() or "/tmp/acea_yolo_ultralytics"
-        config_dir = Path(config_dir_text)
-        try:
-            config_dir.mkdir(parents=True, exist_ok=True)
-            os.environ.setdefault("YOLO_CONFIG_DIR", str(config_dir))
-        except OSError:
-            pass
-        for path in self._candidate_site_packages():
-            if path.exists():
-                text = str(path)
-                if text not in sys.path:
-                    sys.path.insert(0, text)
-
-    def _resolve_model_path(self) -> Path | None:
-        model_text = str(self.params.get("yolo_model_path", "")).strip()
-        if not model_text:
-            return None
-        path = Path(model_text)
-        if path.is_absolute() and path.exists():
-            return path
-        candidates = [
-            Path.cwd() / path,
-            Path("/workspace/iit-concert-ros-pkg") / path,
-            Path("/home/user/xbot2_ws/src/iit-concert-ros-pkg") / path,
-            Path(__file__).resolve().parents[2] / path,
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        return path
-
-    def _ensure_model(self) -> bool:
-        if self.model is not None:
-            return True
-        if self.load_error is not None:
-            return False
-        model_path = self._resolve_model_path()
-        if model_path is None:
-            self.load_error = "model_path_empty"
-            return False
-        if not model_path.exists():
-            self.load_error = f"model_not_found:{model_path}"
-            return False
-        try:
-            self._prepare_pythonpath()
-            from ultralytics import YOLO  # type: ignore
-
-            self.yolo_class = YOLO
-            self.model = YOLO(str(model_path))
-            return True
-        except Exception as exc:  # pragma: no cover - depends on local YOLO env
-            self.load_error = f"{type(exc).__name__}:{exc}"
-            return False
-
-    def _device_arg(self) -> str:
-        if self.device_override is not None:
-            return self.device_override
-        return str(self.params.get("yolo_device", "")).strip()
-
-    def _predict_once(self, rgb: np.ndarray) -> Any:
-        assert self.model is not None
-        kwargs: dict[str, Any] = {
-            "source": PilImage.fromarray(rgb, mode="RGB"),
-            "imgsz": int(self.params["yolo_imgsz"]),
-            "conf": float(self.params["yolo_conf_threshold"]),
-            "verbose": False,
-        }
-        device = self._device_arg()
-        if device:
-            kwargs["device"] = device
-        return self.model.predict(**kwargs)
-
-    def predict(self, rgb: np.ndarray) -> YoloSegCandidate:
-        if not bool(self.params.get("use_yolo_seg_frontend", False)):
-            return YoloSegCandidate(enabled=False, reason="disabled")
-        if not self._ensure_model():
-            return YoloSegCandidate(enabled=True, available=False, reason=f"unavailable:{self.load_error}")
-
-        assert self.model is not None
-        try:
-            results = self._predict_once(rgb)
-        except Exception as exc:  # pragma: no cover - depends on local YOLO env
-            error_text = f"{type(exc).__name__}:{exc}"
-            if bool(self.params.get("yolo_allow_cpu_fallback", True)) and "Invalid CUDA" in error_text:
-                self.device_override = "cpu"
-                try:
-                    results = self._predict_once(rgb)
-                except Exception as retry_exc:  # pragma: no cover - depends on local YOLO env
-                    retry_text = f"{type(retry_exc).__name__}:{retry_exc}"
-                    return YoloSegCandidate(
-                        enabled=True,
-                        available=True,
-                        reason=f"inference_error:{error_text};cpu_fallback_error:{retry_text}",
-                    )
-            else:
-                return YoloSegCandidate(enabled=True, available=True, reason=f"inference_error:{error_text}")
-
-        height, width = rgb.shape[:2]
-        min_area = int(self.params["yolo_min_mask_area_px"])
-        max_area_fraction = float(self.params["yolo_max_mask_area_fraction"])
-        class_filter = str(self.params.get("yolo_class_name", "")).strip()
-        best: YoloSegCandidate | None = None
-        for result in results:
-            boxes = getattr(result, "boxes", None)
-            masks = getattr(result, "masks", None)
-            if boxes is None or masks is None or getattr(masks, "data", None) is None:
-                continue
-            cls_values = [] if getattr(boxes, "cls", None) is None else boxes.cls.cpu().numpy().tolist()
-            conf_values = [] if getattr(boxes, "conf", None) is None else boxes.conf.cpu().numpy().tolist()
-            mask_values = masks.data.cpu().numpy()
-            names = {int(k): str(v) for k, v in getattr(self.model, "names", {}).items()}
-            for idx, mask_float in enumerate(mask_values):
-                class_id = int(cls_values[idx]) if idx < len(cls_values) else 0
-                class_name = names.get(class_id, str(class_id))
-                if class_filter and class_name != class_filter:
-                    continue
-                mask = np.asarray(mask_float, dtype=np.float32)
-                if mask.shape != (height, width):
-                    mask_img = PilImage.fromarray((mask > 0.5).astype(np.uint8) * 255, mode="L")
-                    mask_img = mask_img.resize((width, height), resample=PilImage.Resampling.NEAREST)
-                    mask_bool = np.asarray(mask_img) > 0
-                else:
-                    mask_bool = mask > 0.5
-                area = int(mask_bool.sum())
-                area_fraction = float(area) / max(float(width * height), 1.0)
-                if area < min_area:
-                    continue
-                if max_area_fraction > 0.0 and area_fraction > max_area_fraction:
-                    continue
-                ys, xs = np.nonzero(mask_bool)
-                if xs.size == 0:
-                    continue
-                confidence = float(conf_values[idx]) if idx < len(conf_values) else 0.0
-                candidate = YoloSegCandidate(
-                    enabled=True,
-                    available=True,
-                    detected=True,
-                    accepted=True,
-                    confidence=confidence,
-                    mask_area_px=area,
-                    mask_area_fraction=area_fraction,
-                    candidate_x_image_px=int(np.median(xs)),
-                    class_name=class_name,
-                    reason="mask_detected",
-                    mask=mask_bool,
-                )
-                if best is None or (candidate.confidence or 0.0) > (best.confidence or 0.0):
-                    best = candidate
-
-        if best is None:
-            return YoloSegCandidate(enabled=True, available=True, reason="no_valid_mask")
-        return best
 
 
 class OnlinePipeJunctionDetector:
@@ -768,6 +543,11 @@ class OnlinePipeJunctionDetector:
         self.rgb_track_streak = 0
         self.rgb_track_missed_frames = 0
         self.junction_lock_active = False
+        self.pipe_component_selection_info: dict[str, Any] = {}
+        self.pipe_component_selected_model: dict[str, Any] | None = None
+        self.pipe_lock_model: dict[str, Any] | None = None
+        self.pipe_lock_missed_frames = 0
+        self.pipe_lock_source = "none"
         self.junction_lock_x: float | None = None
         self.junction_lock_velocity_px = 0.0
         self.junction_lock_streak = 0
@@ -786,11 +566,16 @@ class OnlinePipeJunctionDetector:
         # when the lock is lost, so it can never force a hold/phantom.
         self.appearance_template: np.ndarray | None = None
         self._last_appearance_patch: np.ndarray | None = None
-        self.yolo_frontend = YoloSegFrontend(params)
 
     def process(self, rgb: np.ndarray, depth: np.ndarray, k: np.ndarray) -> tuple[dict[str, Any], np.ndarray, np.ndarray]:
         self.processed_frame_count += 1
-        tracker = self._track_pipe(depth, k)
+        try:
+            tracker = self._track_pipe(depth, k)
+        except ValueError as exc:
+            self._mark_pipe_lock_missed(str(exc))
+            self._release_junction_lock("pipe_not_valid")
+            status = self._no_pipe_status(str(exc))
+            return status, rgb.copy(), _depth_visual(depth)
         seam = self._detect_seam(rgb, depth, tracker)
         state_info = self._update_state(tracker, seam)
         self._update_temporal_reference(seam)
@@ -802,6 +587,165 @@ class OnlinePipeJunctionDetector:
         depth_overlay = self._draw_overlay(_depth_visual(depth), tracker, seam, localization)
         status = self._status_dict(tracker, seam, localization, state_info)
         return status, rgb_overlay, depth_overlay
+
+    @staticmethod
+    def _axis_delta_deg(a: np.ndarray, b: np.ndarray) -> float:
+        aa = _normalize(np.asarray(a, dtype=np.float64))
+        bb = _normalize(np.asarray(b, dtype=np.float64))
+        dot = abs(float(np.clip(np.dot(aa, bb), -1.0, 1.0)))
+        return math.degrees(math.acos(dot))
+
+    def _no_pipe_status(self, reason: str) -> dict[str, Any]:
+        return {
+            "state": "SCAN",
+            "detected": False,
+            "accepted": False,
+            "detector_accepted": False,
+            "confidence": None,
+            "candidate_x_strip_px": None,
+            "candidate_x_image_px": None,
+            "reason": f"pipe_not_valid:{reason}",
+            "processed_frame_count": int(self.processed_frame_count),
+            "pipe_component_selection_method": self.pipe_component_selection_info.get("method"),
+            "pipe_component_count": self.pipe_component_selection_info.get("component_count"),
+            "pipe_component_candidate_count": self.pipe_component_selection_info.get("candidate_count"),
+            "pipe_component_rejected_by_shape": self.pipe_component_selection_info.get("rejected_by_shape"),
+            "pipe_component_cylinder_evaluated": self.pipe_component_selection_info.get("cylinder_evaluated"),
+            "pipe_component_cylinder_valid": self.pipe_component_selection_info.get("cylinder_valid"),
+            "pipe_component_selected_label": self.pipe_component_selection_info.get("selected_label"),
+            "pipe_component_fallback_label": self.pipe_component_selection_info.get("fallback_label"),
+            "pipe_lock_active": bool(self.pipe_lock_model is not None),
+            "pipe_lock_missed_frames": int(self.pipe_lock_missed_frames),
+            "pipe_lock_source": self.pipe_lock_source,
+            "pipe_lock_selection_score": self.pipe_component_selection_info.get("score"),
+            "pipe_lock_axis_delta_deg": self.pipe_component_selection_info.get("lock_axis_delta_deg"),
+            "pipe_lock_radius_delta_m": self.pipe_component_selection_info.get("lock_radius_delta_m"),
+            "pipe_lock_stand_delta_m": self.pipe_component_selection_info.get("lock_stand_delta_m"),
+            "pipe_lock_axis_point_delta_m": self.pipe_component_selection_info.get("lock_axis_point_delta_m"),
+            "junction_lock_active": bool(self.junction_lock_active),
+            "junction_lock_missed_frames": int(self.junction_lock_missed_frames),
+            "junction_lock_confidence": _round(self.junction_lock_confidence),
+            "junction_lock_source": self.junction_lock_source,
+            "gap_plane_available": False,
+            "weld_seam_pose_available": False,
+        }
+
+    def _mark_pipe_lock_missed(self, reason: str) -> None:
+        if self.pipe_lock_model is None:
+            self.pipe_lock_source = "none"
+            return
+        self.pipe_lock_missed_frames += 1
+        self.pipe_lock_source = f"missed:{reason}"
+        if (
+            bool(self.params["pipe_lock_release_on_missed"])
+            and self.pipe_lock_missed_frames > int(self.params["pipe_lock_max_missed_frames"])
+        ):
+            self.pipe_lock_model = None
+            self.pipe_lock_source = "released:missed_too_long"
+
+    def _pipe_fit_model(self, fit: Any) -> dict[str, Any] | None:
+        try:
+            axis = _normalize(np.asarray(getattr(fit, "axis_camera_xyz"), dtype=np.float64))
+            axis_point = np.asarray(getattr(fit, "axis_point_camera_xyz_m"), dtype=np.float64).reshape(3)
+            if not np.isfinite(axis_point).all():
+                return None
+            return {
+                "axis": axis,
+                "axis_point": axis_point,
+                "radius_m": float(getattr(fit, "radius_m")),
+                "stand_off_m": float(getattr(fit, "stand_off_m")),
+                "residual_m": float(getattr(fit, "residual_m")),
+                "inlier_fraction": float(getattr(fit, "inlier_fraction")),
+            }
+        except Exception:
+            return None
+
+    def _tracker_pipe_model(self, tracker: TrackerResult) -> dict[str, Any] | None:
+        try:
+            axis = _normalize(np.asarray(tracker.pipe_axis_xyz, dtype=np.float64))
+            centroid = np.asarray(tracker.centroid_xyz_m, dtype=np.float64).reshape(3)
+            if not np.isfinite(centroid).all():
+                return None
+            return {
+                "axis": axis,
+                "axis_point": centroid,
+                "radius_m": float(tracker.pipe_pose_radius_m),
+                "stand_off_m": float(tracker.stand_off_m),
+                "residual_m": float(tracker.pipe_pose_residual_m),
+                "inlier_fraction": float(tracker.pipe_pose_inlier_fraction),
+            }
+        except Exception:
+            return None
+
+    def _pipe_model_valid_for_lock(self, model: dict[str, Any] | None) -> bool:
+        if model is None:
+            return False
+        nominal = max(1e-6, float(self.params["pipe_radius_m"]))
+        radius_margin = max(
+            float(self.params["pipe_lock_radius_abs_margin_m"]),
+            float(self.params["pipe_lock_radius_rel_margin"]) * nominal,
+        )
+        radius = float(model.get("radius_m", 0.0))
+        residual = float(model.get("residual_m", float("inf")))
+        inlier_fraction = float(model.get("inlier_fraction", 0.0))
+        return (
+            abs(radius - nominal) <= radius_margin
+            and residual <= float(self.params["pipe_lock_max_residual_m"])
+            and inlier_fraction >= float(self.params["pipe_lock_min_inlier_fraction"])
+        )
+
+    def _update_pipe_lock(self, tracker: TrackerResult) -> None:
+        if not bool(self.params["enable_pipe_temporal_lock"]):
+            return
+        model = self.pipe_component_selected_model or self._tracker_pipe_model(tracker)
+        if not self._pipe_model_valid_for_lock(model):
+            self._mark_pipe_lock_missed("tracker_model_invalid")
+            return
+        assert model is not None
+        self.pipe_lock_model = model
+        self.pipe_lock_missed_frames = 0
+        self.pipe_lock_source = "tracker_update"
+
+    def _pipe_lock_compatible_score(self, model: dict[str, Any]) -> tuple[bool, float, dict[str, float]]:
+        if self.pipe_lock_model is None:
+            return False, 0.0, {}
+        lock = self.pipe_lock_model
+        axis_delta = self._axis_delta_deg(model["axis"], lock["axis"])
+        radius_delta = abs(float(model["radius_m"]) - float(lock["radius_m"]))
+        stand_delta = abs(float(model["stand_off_m"]) - float(lock["stand_off_m"]))
+        point_delta = float(np.linalg.norm(np.asarray(model["axis_point"]) - np.asarray(lock["axis_point"])))
+        residual = max(0.0, float(model["residual_m"]))
+        inlier_fraction = max(0.0, min(1.0, float(model["inlier_fraction"])))
+
+        max_axis = float(self.params["pipe_lock_max_axis_delta_deg"])
+        max_radius = float(self.params["pipe_lock_max_radius_delta_m"])
+        max_stand = float(self.params["pipe_lock_max_standoff_delta_m"])
+        max_point = float(self.params["pipe_lock_max_axis_point_delta_m"])
+        compatible = (
+            axis_delta <= max_axis
+            and radius_delta <= max_radius
+            and stand_delta <= max_stand
+            and point_delta <= max_point
+            and residual <= float(self.params["pipe_lock_max_residual_m"])
+            and inlier_fraction >= float(self.params["pipe_lock_min_inlier_fraction"])
+        )
+        score = (
+            math.exp(-axis_delta / max(max_axis, 1e-6))
+            * math.exp(-radius_delta / max(max_radius, 1e-6))
+            * math.exp(-stand_delta / max(max_stand, 1e-6))
+            * math.exp(-point_delta / max(max_point, 1e-6))
+            * math.exp(-residual / max(float(self.params["pipe_lock_max_residual_m"]), 1e-6))
+            * max(0.05, inlier_fraction)
+        )
+        debug = {
+            "axis_delta_deg": axis_delta,
+            "radius_delta_m": radius_delta,
+            "stand_delta_m": stand_delta,
+            "axis_point_delta_m": point_delta,
+            "residual_m": residual,
+            "inlier_fraction": inlier_fraction,
+        }
+        return compatible, float(score), debug
 
     def _track_pipe(self, depth: np.ndarray, k: np.ndarray) -> TrackerResult:
         min_depth = float(self.params["min_depth_m"])
@@ -867,7 +811,7 @@ class OnlinePipeJunctionDetector:
         x0, x1 = int(xs.min()), int(xs.max())
         y0, y1 = int(ys.min()), int(ys.max())
 
-        return TrackerResult(
+        tracker = TrackerResult(
             pipe_mask=pipe_mask,
             pipe_pixels=int(pipe_mask.sum()),
             pipe_fraction=float(pipe_mask.mean()),
@@ -889,6 +833,7 @@ class OnlinePipeJunctionDetector:
             pipe_pose_residual_m=float(xyz_fit["residual_m"]),
             threshold_info=threshold_info,
         )
+        return tracker
 
     def _select_pipe_connected_component(
         self,
@@ -903,11 +848,19 @@ class OnlinePipeJunctionDetector:
         those pixels as one "pipe" destabilizes PCA/coverage/localization.
 
         The real pipe is not always the largest component in Gazebo: a nearby
-        wall/floor strip can be larger. Score components by horizontal support
-        and by how close their image height is to the expected projected pipe
-        diameter, computed from ``pipe_radius_m``, depth, and camera intrinsics.
+        robot, wall, or floor fragment can be larger. Before a pipe is locked,
+        candidates are validated by cylinder fit and projected diameter. After
+        a lock exists, the selected component must be compatible with the
+        previous pipe model (axis, radius, depth, and 3D position); otherwise
+        the pipe is marked invalid instead of jumping to another object.
         """
+        self.pipe_component_selected_model = None
         if mask.ndim != 2 or not np.any(mask):
+            self.pipe_component_selection_info = {
+                "method": "raw_mask_empty_or_invalid",
+                "component_count": 0,
+                "selected_label": None,
+            }
             return mask
         min_pixels = max(1, int(self.params["min_pipe_pixels"]) // 4)
 
@@ -921,16 +874,32 @@ class OnlinePipeJunctionDetector:
         )
         labels, count = scipy_ndimage.label(mask, structure=structure)
         if count <= 1:
+            self.pipe_component_selection_info = {
+                "method": "single_component",
+                "component_count": int(count),
+                "selected_label": 1 if count == 1 else None,
+            }
             return mask
         sizes = np.bincount(labels.ravel())
         if sizes.size <= 1:
+            self.pipe_component_selection_info = {
+                "method": "label_failure",
+                "component_count": int(count),
+                "selected_label": None,
+            }
             return mask
         sizes[0] = 0
 
         fy = float(k[1, 1]) if k.shape == (3, 3) else 0.0
         radius_m = float(self.params["pipe_radius_m"])
-        best_label = 0
-        best_score = -1.0
+        image_h, image_w = mask.shape[:2]
+        shape_prior_enabled = bool(self.params.get("pipe_component_shape_prior_enabled", False))
+        min_width_fraction = float(self.params.get("pipe_component_min_width_fraction", 0.28))
+        bottom_margin_fraction = float(self.params.get("pipe_component_bottom_margin_fraction", 0.05))
+        bottom_allow_width_fraction = float(self.params.get("pipe_component_bottom_allow_width_fraction", 0.55))
+        candidates_all: list[dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
+        rejected_by_shape = 0
         for label in range(1, sizes.size):
             count_i = int(sizes[label])
             if count_i < min_pixels:
@@ -953,17 +922,239 @@ class OnlinePipeJunctionDetector:
                 height_score = math.exp(-height_error)
             else:
                 height_score = 1.0
+            width_fraction = bbox_w / max(float(image_w), 1.0)
+            touches_bottom = float(ys.max()) >= (1.0 - bottom_margin_fraction) * max(float(image_h - 1), 1.0)
             # Width matters because the pipe spans the camera horizontally in
             # this task, but size is damped so large background components do
             # not dominate when their projected height is wrong.
             score = bbox_w * math.sqrt(float(count_i)) * height_score
-            if score > best_score:
-                best_score = score
-                best_label = label
+            candidate = {
+                "label": int(label),
+                "count": count_i,
+                "score": float(score),
+                "bbox_w": float(bbox_w),
+                "bbox_h": float(bbox_h),
+                "height_score": float(height_score),
+                "width_fraction": float(width_fraction),
+                "touches_bottom": bool(touches_bottom),
+            }
+            candidates_all.append(candidate)
+            shape_rejected = shape_prior_enabled and (
+                width_fraction < min_width_fraction
+                or (touches_bottom and width_fraction < bottom_allow_width_fraction)
+            )
+            if shape_rejected:
+                rejected_by_shape += 1
+                continue
+            candidates.append(candidate)
 
-        if best_label <= 0 or int(sizes[best_label]) < min_pixels:
+        # If every component fails the shape prior, fall back to the old
+        # candidates instead of crashing the detector. This preserves operation
+        # in unusual views, but status exposes rejected_by_shape so the case is
+        # visible during debugging.
+        if not candidates and candidates_all:
+            candidates = candidates_all
+
+        if not candidates:
+            self.pipe_component_selection_info = {
+                "method": "no_large_component",
+                "component_count": int(count),
+                "selected_label": None,
+                "rejected_by_shape": int(rejected_by_shape),
+            }
             return mask
-        return labels == best_label
+        candidates.sort(key=lambda item: float(item["score"]), reverse=True)
+        fallback_label = int(candidates[0]["label"])
+        cylinder_evaluated = 0
+        cylinder_valid = 0
+
+        if bool(self.params.get("use_cylinder_component_selection", True)) and _fit_pipe_pose is not None:
+            best_label = 0
+            best_score = -float("inf")
+            best_model: dict[str, Any] | None = None
+            fit_candidates: list[dict[str, Any]] = []
+            max_components = max(1, int(self.params["cylinder_component_max_components"]))
+            nominal_radius = max(1e-6, float(self.params["pipe_radius_m"]))
+            radius_margin = max(
+                float(self.params["cylinder_component_radius_abs_margin_m"]),
+                float(self.params["cylinder_component_radius_rel_margin"]) * nominal_radius,
+            )
+            fit_params = {
+                "min_depth_m": float(self.params["min_depth_m"]),
+                "max_depth_m": float(self.params["max_depth_m"]),
+                "min_pipe_pixels": min_pixels,
+                "max_fit_points": int(self.params["max_pca_points"]),
+                "sample_stride": int(self.params["sample_stride"]),
+                "consensus_iterations": int(self.params["cylinder_component_consensus_iterations"]),
+                "radius_tolerance_m": float(self.params["cylinder_component_radius_tolerance_m"]),
+                "min_inliers": int(self.params["cylinder_component_min_inliers"]),
+                "min_inlier_fraction": float(self.params["cylinder_component_min_inlier_fraction"]),
+                "radius_min_m": max(1e-4, nominal_radius - radius_margin),
+                "radius_max_m": nominal_radius + radius_margin,
+                "max_residual_m": float(self.params["cylinder_component_max_residual_m"]),
+            }
+            for candidate in candidates[:max_components]:
+                label = int(candidate["label"])
+                component_mask = labels == label
+                cylinder_evaluated += 1
+                try:
+                    fit = _fit_pipe_pose(depth, k, mask=component_mask, params=fit_params)
+                except Exception:
+                    continue
+                if not bool(getattr(fit, "valid", False)):
+                    continue
+                cylinder_valid += 1
+                radius_error = abs(float(getattr(fit, "radius_m", nominal_radius)) - nominal_radius)
+                radius_score = math.exp(-radius_error / max(radius_margin, 1e-6))
+                residual = max(0.0, float(getattr(fit, "residual_m", 0.0)))
+                residual_score = math.exp(-residual / max(float(self.params["cylinder_component_max_residual_m"]), 1e-6))
+                axis = np.asarray(getattr(fit, "axis_camera_xyz", np.zeros(3)), dtype=np.float64)
+                axis = _normalize(axis)
+                cylinder_score = (
+                    float(candidate["score"])
+                    * max(0.05, float(getattr(fit, "inlier_fraction", 0.0)))
+                    * radius_score
+                    * residual_score
+                )
+                fit_model = self._pipe_fit_model(fit)
+                fit_record = {
+                    **candidate,
+                    "fit": fit,
+                    "fit_model": fit_model,
+                    "cylinder_score": float(cylinder_score),
+                    "radius_m": float(getattr(fit, "radius_m", 0.0)),
+                    "residual_m": residual,
+                    "inlier_fraction": float(getattr(fit, "inlier_fraction", 0.0)),
+                }
+                fit_candidates.append(fit_record)
+                if cylinder_score > best_score:
+                    best_score = cylinder_score
+                    best_label = label
+                    best_model = fit_model
+
+            lock_active = (
+                bool(self.params["enable_pipe_temporal_lock"])
+                and self.pipe_lock_model is not None
+            )
+            if lock_active:
+                best_temporal: dict[str, Any] | None = None
+                best_temporal_score = -float("inf")
+                best_temporal_debug: dict[str, float] = {}
+                best_rejected_score = -float("inf")
+                best_rejected_debug: dict[str, float] = {}
+                for candidate in fit_candidates:
+                    model = candidate.get("fit_model")
+                    if not self._pipe_model_valid_for_lock(model):
+                        continue
+                    compatible, compat_score, compat_debug = self._pipe_lock_compatible_score(model)
+                    if compat_score > best_rejected_score:
+                        best_rejected_score = compat_score
+                        best_rejected_debug = compat_debug
+                    if not compatible:
+                        continue
+                    temporal_score = compat_score * max(0.05, float(candidate["inlier_fraction"]))
+                    if temporal_score > best_temporal_score:
+                        best_temporal_score = temporal_score
+                        best_temporal = candidate
+                        best_temporal_debug = compat_debug
+                if (
+                    best_temporal is not None
+                    and best_temporal_score >= float(self.params["pipe_lock_min_compatibility_score"])
+                ):
+                    selected_label = int(best_temporal["label"])
+                    self.pipe_component_selected_model = best_temporal.get("fit_model")
+                    self.pipe_component_selection_info = {
+                        "method": "temporal_pipe_lock",
+                        "component_count": int(count),
+                        "candidate_count": int(len(candidates)),
+                        "rejected_by_shape": int(rejected_by_shape),
+                        "cylinder_evaluated": int(cylinder_evaluated),
+                        "cylinder_valid": int(cylinder_valid),
+                        "selected_label": selected_label,
+                        "fallback_label": int(fallback_label),
+                        "score": _round(float(best_temporal_score)),
+                        "lock_axis_delta_deg": _round(best_temporal_debug.get("axis_delta_deg")),
+                        "lock_radius_delta_m": _round(best_temporal_debug.get("radius_delta_m")),
+                        "lock_stand_delta_m": _round(best_temporal_debug.get("stand_delta_m")),
+                        "lock_axis_point_delta_m": _round(best_temporal_debug.get("axis_point_delta_m")),
+                    }
+                    return labels == selected_label
+
+                self._mark_pipe_lock_missed("no_compatible_component")
+                if bool(self.params["pipe_lock_reject_global_when_locked"]):
+                    self.pipe_component_selection_info = {
+                        "method": "temporal_pipe_lock_no_compatible",
+                        "component_count": int(count),
+                        "candidate_count": int(len(candidates)),
+                        "rejected_by_shape": int(rejected_by_shape),
+                        "cylinder_evaluated": int(cylinder_evaluated),
+                        "cylinder_valid": int(cylinder_valid),
+                        "selected_label": None,
+                        "fallback_label": int(fallback_label),
+                        "pipe_lock_missed_frames": int(self.pipe_lock_missed_frames),
+                        "score": _round(best_rejected_score) if np.isfinite(best_rejected_score) else None,
+                        "lock_axis_delta_deg": _round(best_rejected_debug.get("axis_delta_deg")),
+                        "lock_radius_delta_m": _round(best_rejected_debug.get("radius_delta_m")),
+                        "lock_stand_delta_m": _round(best_rejected_debug.get("stand_delta_m")),
+                        "lock_axis_point_delta_m": _round(best_rejected_debug.get("axis_point_delta_m")),
+                    }
+                    return np.zeros_like(mask, dtype=bool)
+
+            if best_label > 0:
+                self.pipe_component_selected_model = best_model
+                self.pipe_component_selection_info = {
+                    "method": "cylinder_fit",
+                    "component_count": int(count),
+                    "candidate_count": int(len(candidates)),
+                    "rejected_by_shape": int(rejected_by_shape),
+                    "cylinder_evaluated": int(cylinder_evaluated),
+                    "cylinder_valid": int(cylinder_valid),
+                    "selected_label": int(best_label),
+                    "fallback_label": int(fallback_label),
+                    "score": _round(float(best_score)),
+                }
+                return labels == best_label
+
+            if bool(self.params["pipe_component_require_valid_cylinder"]):
+                self.pipe_component_selection_info = {
+                    "method": "no_valid_cylinder_component",
+                    "component_count": int(count),
+                    "candidate_count": int(len(candidates)),
+                    "rejected_by_shape": int(rejected_by_shape),
+                    "cylinder_evaluated": int(cylinder_evaluated),
+                    "cylinder_valid": int(cylinder_valid),
+                    "selected_label": None,
+                    "fallback_label": int(fallback_label),
+                }
+                return np.zeros_like(mask, dtype=bool)
+
+        if (
+            bool(self.params.get("pipe_component_require_valid_cylinder", False))
+            and bool(self.params.get("use_cylinder_component_selection", True))
+            and _fit_pipe_pose is None
+        ):
+            self.pipe_component_selection_info = {
+                "method": "cylinder_fit_unavailable",
+                "component_count": int(count),
+                "candidate_count": int(len(candidates)),
+                "rejected_by_shape": int(rejected_by_shape),
+                "cylinder_evaluated": int(cylinder_evaluated),
+                "cylinder_valid": int(cylinder_valid),
+                "selected_label": None,
+                "fallback_label": int(fallback_label),
+            }
+            return np.zeros_like(mask, dtype=bool)
+
+        self.pipe_component_selection_info = {
+            "method": "bbox_fallback",
+            "component_count": int(count),
+            "candidate_count": int(len(candidates)),
+            "rejected_by_shape": int(rejected_by_shape),
+            "cylinder_evaluated": int(cylinder_evaluated),
+            "cylinder_valid": int(cylinder_valid),
+            "selected_label": int(fallback_label),
+        }
+        return labels == fallback_label
 
     def _variant_a_params(self) -> dict[str, Any]:
         """Map node params -> acea_seam_detector.detect_seam params (rest = its defaults)."""
@@ -1081,8 +1272,8 @@ class OnlinePipeJunctionDetector:
         robust_sigma = max(1.4826 * residual_mad, 1.0 / 255.0)
 
         mode = str(self.params["junction_acceptance_mode"]).strip().lower()
-        if mode not in ("rgb_depth", "rgb_temporal", "variant_a_rgb"):
-            mode = "rgb_depth"
+        if mode not in ("rgb_temporal", "variant_a_rgb"):
+            mode = "variant_a_rgb"
 
         # Variant A (deterministic RGB-only): run on the already-rotated, pipe-only
         # strip (pipe horizontal -> seam vertical -> pipe_axis_angle_deg=0).
@@ -1106,22 +1297,8 @@ class OnlinePipeJunctionDetector:
             )
             classical_candidate_x = int(np.argmax(np.where(valid, temporal_candidate_score, -np.inf)))
 
-        yolo_candidate = self._yolo_candidate_for_strip(
-            rgb,
-            angle_deg,
-            [x0, y0, x1, y1],
-            strip_mask,
-            valid,
-            residual,
-            rotated_depth,
-            rotated_mask,
-        )
-        use_yolo = bool(self.params["use_yolo_seg_frontend"])
         if mode == "variant_a_rgb" and variant_a_result is not None:
             candidate_x = self._variant_a_center_x_in_strip(variant_a_result, gray.shape)
-        elif use_yolo and yolo_candidate.candidate_x_strip_px is not None:
-            candidate_x = int(yolo_candidate.candidate_x_strip_px)
-            candidate_x = int(np.clip(candidate_x, 0, strip_width - 1))
         else:
             candidate_x = classical_candidate_x
         klt_prediction = self._klt_predict_junction_x(gray, strip_mask, residual, valid)
@@ -1150,90 +1327,25 @@ class OnlinePipeJunctionDetector:
 
         z_score = (float(residual[candidate_x]) - residual_median) / robust_sigma
         classical_z_score = (float(residual[classical_candidate_x]) - residual_median) / robust_sigma
-        min_local_z = float(self.params["weak_rgb_min_z_score"])
-        strong_local_z = float(self.params["weak_rgb_strong_z_score"])
+        min_local_z = float(self.params["rgb_local_min_z_score"])
+        strong_local_z = float(self.params["rgb_local_strong_z_score"])
         rgb_local_contrast_score = float(
             np.clip((z_score - min_local_z) / max(strong_local_z - min_local_z, 1e-6), 0.0, 1.0)
         )
         depth_gap = self._depth_gap_evidence(rotated_depth, rotated_mask, [x0, y0, x1, y1], candidate_x)
-        standard_depth_gap_threshold = float(self.params["min_depth_gap_m"])
         depth_gap_raw_accepted = bool(
-            depth_gap["depth_jump_m"] >= standard_depth_gap_threshold
-            or depth_gap["coverage_drop"] >= float(self.params["min_depth_gap_coverage_drop"])
+            depth_gap["depth_jump_m"] >= float(self.params["depth_gap_diagnostic_min_score_m"])
+            or depth_gap["coverage_drop"] >= float(self.params["depth_gap_diagnostic_min_coverage_drop"])
         )
-        yolo_weak_depth_gap_threshold = float(self.params["yolo_weak_depth_gap_min_score_m"])
-        yolo_confidence_for_gate = 0.0 if yolo_candidate.confidence is None else float(yolo_candidate.confidence)
-        yolo_weak_depth_gap_supported = bool(
-            use_yolo
-            and bool(self.params["enable_yolo_weak_depth_gap_support"])
-            and bool(yolo_candidate.accepted)
-            and yolo_confidence_for_gate >= float(self.params["yolo_weak_depth_gap_min_confidence"])
-            and float(depth_gap["score"]) >= yolo_weak_depth_gap_threshold
-        )
-        if yolo_weak_depth_gap_supported:
-            depth_gap_raw_accepted = True
-        depth_gap_threshold_used = yolo_weak_depth_gap_threshold if yolo_weak_depth_gap_supported else standard_depth_gap_threshold
-        max_depth_gap_score = float(self.params["max_depth_gap_score_m"])
-        min_depth_gap_score = float(self.params["min_depth_gap_score_m"])
-        depth_gap_score_plausible = bool(
-            (min_depth_gap_score <= 0.0 or float(depth_gap["score"]) >= min_depth_gap_score)
-            and (max_depth_gap_score <= 0.0 or float(depth_gap["score"]) <= max_depth_gap_score)
-        )
+        depth_gap_score_plausible = True
         depth_gap_accepted = depth_gap_raw_accepted and depth_gap_score_plausible
-        if not bool(self.params["use_depth_gap_gate"]):
-            depth_gap_raw_accepted = True
-            depth_gap_score_plausible = True
-            depth_gap_accepted = True
-            depth_gap_threshold_used = 0.0
-        weak_rgb_depth_supported = bool(
-            self.params["enable_weak_rgb_depth_support"]
-            and bool(self.params["use_depth_gap_gate"])
-            and depth_gap_accepted
-            and contrast >= float(self.params["weak_rgb_min_dark_contrast"])
-            and z_score >= min_local_z
-        )
-        confidence = rgb_dark_score
-        if weak_rgb_depth_supported:
-            confidence = max(confidence, rgb_local_contrast_score * float(self.params["weak_rgb_confidence_scale"]))
-        confidence = float(np.clip(confidence, 0.0, 1.0))
+        confidence = float(np.clip(rgb_dark_score, 0.0, 1.0))
         rgb_dark_threshold_used = min_dark
-        if weak_rgb_depth_supported and rgb_dark_score < float(self.params["accept_confidence"]):
-            rgb_dark_threshold_used = float(self.params["weak_rgb_min_dark_contrast"])
-        rgb_dark_accepted = bool(
-            rgb_dark_score >= float(self.params["accept_confidence"]) or weak_rgb_depth_supported
-        )
+        rgb_dark_accepted = bool(rgb_dark_score >= float(self.params["accept_confidence"]))
 
-        visual_frontend = "yolo_seg_mask" if use_yolo else "classical_rgb_dark"
-        visual_frontend_accepted = bool(yolo_candidate.accepted) if use_yolo else rgb_dark_accepted
-        if use_yolo:
-            yolo_confidence = 0.0 if yolo_candidate.confidence is None else float(yolo_candidate.confidence)
-            confidence = float(np.clip(yolo_confidence, 0.0, 1.0))
-            if weak_rgb_depth_supported:
-                confidence = max(confidence, rgb_local_contrast_score * float(self.params["weak_rgb_confidence_scale"]))
-
-        if use_yolo and yolo_weak_depth_gap_supported:
-            success_reason = "yolo_seg_and_weak_depth_gap"
-        else:
-            success_reason = "yolo_seg_and_depth_gap" if use_yolo else "rgb_and_depth_gap"
-        visual_reject_reason = (
-            "yolo_seg_rejected" if not use_yolo else f"yolo_seg_rejected:{yolo_candidate.reason}"
-        )
-        if not use_yolo:
-            visual_reject_reason = "rgb_dark_rejected"
-
-        negative_gate_reason = success_reason
-        if not visual_frontend_accepted and not depth_gap_accepted:
-            negative_gate_reason = f"{visual_reject_reason};depth_gap_rejected"
-        elif not visual_frontend_accepted:
-            negative_gate_reason = visual_reject_reason
-        elif not depth_gap_accepted:
-            if depth_gap_raw_accepted and not depth_gap_score_plausible:
-                if min_depth_gap_score > 0.0 and float(depth_gap["score"]) < min_depth_gap_score:
-                    negative_gate_reason = "depth_gap_too_small"
-                else:
-                    negative_gate_reason = "depth_gap_too_large"
-            else:
-                negative_gate_reason = "depth_gap_rejected"
+        visual_frontend = "classical_rgb_dark"
+        visual_frontend_accepted = rgb_dark_accepted
+        negative_gate_reason = "classical_rgb_dark" if visual_frontend_accepted else "rgb_dark_rejected"
         temporal_change = self._temporal_scan_change(profile, valid, candidate_x)
         temporal_gate_enabled = bool(self.params["enable_temporal_scan_change"]) and bool(
             self.params["use_temporal_scan_change_gate"]
@@ -1303,7 +1415,6 @@ class OnlinePipeJunctionDetector:
             and track["streak"] >= int(self.params["rgb_temporal_min_track_streak"])
         )
 
-        depth_gap_used_for_acceptance = bool(mode == "rgb_depth" and self.params["use_depth_gap_gate"])
         if mode == "rgb_temporal":
             visual_frontend = "rgb_temporal_edge"
             visual_frontend_accepted = bool(rgb_temporal_candidate_ok)
@@ -1317,7 +1428,7 @@ class OnlinePipeJunctionDetector:
                 negative_gate_reason = "rgb_temporal_tracking"
             else:
                 negative_gate_reason = "rgb_temporal_edge_track"
-        elif mode == "variant_a_rgb":
+        else:
             va_seam = bool(variant_a_result.accepted) if variant_a_result is not None else False
             va_sig = float(variant_a_result.significance) if variant_a_result is not None else 0.0
             va_reason = variant_a_result.reason if variant_a_result is not None else "variant_a_unavailable"
@@ -1350,15 +1461,6 @@ class OnlinePipeJunctionDetector:
                 negative_gate_reason = f"variant_a:pipe_end_depth={float(depth_gap['depth_jump_m']):.2f}m"
             else:
                 negative_gate_reason = f"variant_a:{va_reason}"
-        else:
-            local_candidate_accepted = visual_frontend_accepted and depth_gap_accepted
-            accepted = local_candidate_accepted and (not temporal_gate_enabled or temporal_change.accepted)
-            if local_candidate_accepted and temporal_gate_enabled and not temporal_change.accepted:
-                if negative_gate_reason == success_reason:
-                    negative_gate_reason = f"temporal_change_rejected:{temporal_change.reason}"
-                else:
-                    negative_gate_reason = f"{negative_gate_reason};temporal_change_rejected:{temporal_change.reason}"
-
         if accepted and bool(self.params["enable_opencv_klt_tracking"]):
             self._klt_update_reference(np.clip(gray * 255.0, 0, 255).astype(np.uint8), strip_mask, float(candidate_x))
 
@@ -1376,19 +1478,13 @@ class OnlinePipeJunctionDetector:
             rgb_dark_score=rgb_dark_score,
             rgb_local_contrast_score=rgb_local_contrast_score,
             rgb_dark_threshold_used=rgb_dark_threshold_used,
-            weak_rgb_depth_supported=weak_rgb_depth_supported,
             rgb_dark_accepted=rgb_dark_accepted,
             depth_gap_score=float(depth_gap["score"]),
             depth_gap_accepted=depth_gap_accepted,
             depth_gap_raw_accepted=depth_gap_raw_accepted,
             depth_gap_score_plausible=depth_gap_score_plausible,
-            depth_gap_threshold_used_m=depth_gap_threshold_used,
-            min_depth_gap_score_m=min_depth_gap_score,
-            max_depth_gap_score_m=max_depth_gap_score,
             depth_gap_depth_jump_m=float(depth_gap["depth_jump_m"]),
             depth_gap_coverage_drop=float(depth_gap["coverage_drop"]),
-            yolo_weak_depth_gap_supported=yolo_weak_depth_gap_supported,
-            yolo_weak_depth_gap_threshold_m=yolo_weak_depth_gap_threshold,
             negative_gate_reason=negative_gate_reason,
             local_candidate_accepted=local_candidate_accepted,
             temporal_change_score=temporal_change.score,
@@ -1399,19 +1495,6 @@ class OnlinePipeJunctionDetector:
             temporal_reference_ready=temporal_change.reference_ready,
             temporal_reference_frame_count=temporal_change.reference_frame_count,
             temporal_change_reason=temporal_change.reason,
-            yolo_seg_enabled=bool(yolo_candidate.enabled),
-            yolo_seg_available=bool(yolo_candidate.available),
-            yolo_seg_detected=bool(yolo_candidate.detected),
-            yolo_seg_confidence=yolo_candidate.confidence,
-            yolo_seg_mask_area_px=int(yolo_candidate.mask_area_px),
-            yolo_seg_mask_area_fraction=float(yolo_candidate.mask_area_fraction),
-            yolo_seg_strip_overlap_px=int(yolo_candidate.strip_overlap_px),
-            yolo_seg_candidate_x_strip_px=yolo_candidate.candidate_x_strip_px,
-            yolo_seg_candidate_x_rotated_px=yolo_candidate.candidate_x_rotated_px,
-            yolo_seg_candidate_x_image_px=yolo_candidate.candidate_x_image_px,
-            yolo_seg_class_name=yolo_candidate.class_name,
-            yolo_seg_reason=yolo_candidate.reason,
-            yolo_seg_mask=yolo_candidate.mask,
             junction_acceptance_mode=mode,
             variant_a_orientation_deg=0.0
             if variant_a_result is None
@@ -1439,7 +1522,6 @@ class OnlinePipeJunctionDetector:
             klt_dx_px=float(klt_prediction.get("dx_px", 0.0) or 0.0),
             klt_predicted_x_strip_px=None if klt_predicted_x is None else float(klt_predicted_x),
             pipe_end_rejected=pipe_end_rejected,
-            depth_gap_used_for_acceptance=depth_gap_used_for_acceptance,
             accepted=accepted,
             edge_margin_px=edge_margin,
             crop_xyxy=[x0, y0, x1, y1],
@@ -1820,63 +1902,6 @@ class OnlinePipeJunctionDetector:
             "velocity": velocity,
         }
 
-    def _yolo_candidate_for_strip(
-        self,
-        rgb: np.ndarray,
-        angle_deg: float,
-        crop_xyxy: list[int],
-        strip_mask: np.ndarray,
-        valid_columns: np.ndarray,
-        residual: np.ndarray,
-        rotated_depth: np.ndarray,
-        rotated_mask: np.ndarray,
-    ) -> YoloSegCandidate:
-        candidate = self.yolo_frontend.predict(rgb)
-        if not candidate.enabled or candidate.mask is None:
-            return candidate
-
-        x0, y0, x1, y1 = [int(v) for v in crop_xyxy]
-        mask_image = PilImage.fromarray((candidate.mask.astype(np.uint8) * 255), mode="L")
-        rotated_mask_img = mask_image.rotate(angle_deg, resample=PilImage.Resampling.NEAREST, expand=False, fillcolor=0)
-        rotated_mask = np.asarray(rotated_mask_img) > 0
-        mask_strip = rotated_mask[y0:y1 + 1, x0:x1 + 1] & strip_mask
-        ys, xs = np.nonzero(mask_strip)
-        candidate.strip_overlap_px = int(xs.size)
-
-        if xs.size < int(self.params["yolo_min_strip_overlap_px"]):
-            candidate.accepted = False
-            candidate.candidate_x_strip_px = None
-            candidate.candidate_x_rotated_px = None
-            if candidate.detected:
-                candidate.reason = "mask_not_on_pipe_strip"
-            return candidate
-
-        unique_x = np.unique(xs)
-        valid_unique_x = unique_x[valid_columns[unique_x]] if unique_x.size else unique_x
-        if valid_unique_x.size == 0:
-            valid_unique_x = unique_x
-
-        best_x = int(np.median(valid_unique_x))
-        best_depth_score = -1.0
-        best_residual = -1.0
-        for column in valid_unique_x:
-            depth_gap = self._depth_gap_evidence(rotated_depth, rotated_mask, crop_xyxy, int(column))
-            depth_score = float(depth_gap["score"])
-            column_residual = float(max(0.0, residual[int(column)])) if np.isfinite(residual[int(column)]) else 0.0
-            if depth_score > best_depth_score + 1e-12 or (
-                abs(depth_score - best_depth_score) <= 1e-12 and column_residual > best_residual
-            ):
-                best_x = int(column)
-                best_depth_score = depth_score
-                best_residual = column_residual
-
-        candidate.candidate_x_strip_px = best_x
-        candidate.candidate_x_rotated_px = int(x0 + candidate.candidate_x_strip_px)
-        candidate.accepted = bool(candidate.detected)
-        if candidate.accepted:
-            candidate.reason = "mask_on_pipe_strip;column_selected_by_depth_gap"
-        return candidate
-
     def _temporal_scan_change(self, profile: np.ndarray, valid: np.ndarray, candidate_x: int) -> TemporalChangeResult:
         min_frames = int(self.params["temporal_reference_min_frames"])
         reference_ready = (
@@ -2086,6 +2111,7 @@ class OnlinePipeJunctionDetector:
                 self.appearance_template = None
 
         if eligible:
+            self._update_pipe_lock(tracker)
             self.previous_geometry = current_geometry
             self.previous_candidate_x = seam.candidate_x_strip_px
         elif bool(self.params["reset_geometry_on_reject"]):
@@ -2096,12 +2122,7 @@ class OnlinePipeJunctionDetector:
         if not seam.accepted:
             reason_parts.append("detector_rejected")
         if not seam.visual_frontend_accepted:
-            if seam.visual_frontend == "yolo_seg_mask":
-                reason_parts.append(f"yolo_seg_rejected:{seam.yolo_seg_reason}")
-            else:
-                reason_parts.append("rgb_dark_rejected")
-        if seam.depth_gap_used_for_acceptance and not seam.depth_gap_accepted:
-            reason_parts.append("depth_gap_rejected")
+            reason_parts.append("rgb_dark_rejected")
         if seam.temporal_change_gate_enabled and not seam.temporal_change_accepted:
             reason_parts.append(f"temporal_change_rejected:{seam.temporal_change_reason}")
         if not confidence_ok:
@@ -2225,6 +2246,20 @@ class OnlinePipeJunctionDetector:
         self.junction_lock_velocity_px = 0.7 * self.junction_lock_velocity_px + 0.3 * measured_velocity
         self.junction_lock_x = float(measured_i)
         self.junction_lock_source = "reacquired_measurement"
+        # The lock FOUND seam evidence near the predicted position this frame, so
+        # this is NOT a miss -> reset the miss counter. Otherwise missed_frames
+        # (only reset on a fresh, fully-gated detection in _update_junction_lock)
+        # keeps climbing while the lock tracks the junction fine via the relaxed
+        # reacquire, and the lock is force-released after max_missed frames even
+        # though the junction is visible the whole time. Observed live: a clearly
+        # framed junction was held by the lock for exactly 12 reacquired frames
+        # (junction_lock_source=reacquired_measurement, missed 9->12), then
+        # released "missed_too_long" and the candidate jumped to the image border.
+        # missed_frames must count only consecutive frames with NO evidence
+        # (no_visual_reacquire / measurement_far), so the lock can bridge an
+        # arbitrarily long run of strict-detection failures as long as the seam is
+        # still there.
+        self.junction_lock_missed_frames = 0
 
         seam.candidate_x_strip_px = measured_i
         seam.candidate_x_rotated_px = int(seam.crop_xyxy[0] + measured_i)
@@ -2435,30 +2470,11 @@ class OnlinePipeJunctionDetector:
             "rgb_dark_score": _round(seam.rgb_dark_score),
             "rgb_local_contrast_score": _round(seam.rgb_local_contrast_score),
             "rgb_dark_threshold_used": _round(seam.rgb_dark_threshold_used),
-            "weak_rgb_depth_supported": bool(seam.weak_rgb_depth_supported),
             # A raw seam acceptance that the state machine flagged as a large
             # candidate jump (hop to another line) must NOT be surfaced as accepted
             # nor propagated downstream: the jump guard already refused to lock it.
             "detector_accepted": bool(seam.accepted and state_info.get("jump_ok", True)),
             "rgb_dark_accepted": bool(seam.rgb_dark_accepted),
-            "yolo_seg_enabled": bool(seam.yolo_seg_enabled),
-            "yolo_seg_available": bool(seam.yolo_seg_available),
-            "yolo_seg_detected": bool(seam.yolo_seg_detected),
-            "yolo_seg_confidence": _round(seam.yolo_seg_confidence),
-            "yolo_seg_mask_area_px": int(seam.yolo_seg_mask_area_px),
-            "yolo_seg_mask_area_fraction": _round(seam.yolo_seg_mask_area_fraction),
-            "yolo_seg_strip_overlap_px": int(seam.yolo_seg_strip_overlap_px),
-            "yolo_seg_candidate_x_strip_px": None
-            if seam.yolo_seg_candidate_x_strip_px is None
-            else int(seam.yolo_seg_candidate_x_strip_px),
-            "yolo_seg_candidate_x_rotated_px": None
-            if seam.yolo_seg_candidate_x_rotated_px is None
-            else int(seam.yolo_seg_candidate_x_rotated_px),
-            "yolo_seg_candidate_x_image_px": None
-            if seam.yolo_seg_candidate_x_image_px is None
-            else int(seam.yolo_seg_candidate_x_image_px),
-            "yolo_seg_class_name": seam.yolo_seg_class_name,
-            "yolo_seg_reason": seam.yolo_seg_reason,
             "rgb_temporal_accepted": bool(seam.rgb_temporal_accepted),
             "rgb_temporal_score": _round(seam.rgb_temporal_score),
             "rgb_vertical_edge_score": _round(seam.rgb_vertical_edge_score),
@@ -2482,18 +2498,12 @@ class OnlinePipeJunctionDetector:
             "klt_dx_px": _round(seam.klt_dx_px),
             "klt_predicted_x_strip_px": _round(seam.klt_predicted_x_strip_px),
             "pipe_end_rejected": bool(seam.pipe_end_rejected),
-            "depth_gap_used_for_acceptance": bool(seam.depth_gap_used_for_acceptance),
             "depth_gap_score": _round(seam.depth_gap_score),
             "depth_gap_accepted": bool(seam.depth_gap_accepted),
             "depth_gap_raw_accepted": bool(seam.depth_gap_raw_accepted),
             "depth_gap_score_plausible": bool(seam.depth_gap_score_plausible),
-            "depth_gap_threshold_used_m": _round(seam.depth_gap_threshold_used_m),
-            "min_depth_gap_score_m": _round(seam.min_depth_gap_score_m),
-            "max_depth_gap_score_m": _round(seam.max_depth_gap_score_m),
             "depth_gap_depth_jump_m": _round(seam.depth_gap_depth_jump_m),
             "depth_gap_coverage_drop": _round(seam.depth_gap_coverage_drop),
-            "yolo_weak_depth_gap_supported": bool(seam.yolo_weak_depth_gap_supported),
-            "yolo_weak_depth_gap_threshold_m": _round(seam.yolo_weak_depth_gap_threshold_m),
             "negative_gate_reason": seam.negative_gate_reason,
             "local_candidate_accepted": bool(seam.local_candidate_accepted),
             "temporal_scan_change_enabled": bool(self.params["enable_temporal_scan_change"]),
@@ -2516,6 +2526,22 @@ class OnlinePipeJunctionDetector:
             "image_pipe_axis_angle_deg": _round(tracker.image_axis_angle_deg),
             "pipe_pixels": int(tracker.pipe_pixels),
             "pipe_fraction_of_image": _round(tracker.pipe_fraction),
+            "pipe_component_selection_method": self.pipe_component_selection_info.get("method"),
+            "pipe_component_count": self.pipe_component_selection_info.get("component_count"),
+            "pipe_component_candidate_count": self.pipe_component_selection_info.get("candidate_count"),
+            "pipe_component_rejected_by_shape": self.pipe_component_selection_info.get("rejected_by_shape"),
+            "pipe_component_cylinder_evaluated": self.pipe_component_selection_info.get("cylinder_evaluated"),
+            "pipe_component_cylinder_valid": self.pipe_component_selection_info.get("cylinder_valid"),
+            "pipe_component_selected_label": self.pipe_component_selection_info.get("selected_label"),
+            "pipe_component_fallback_label": self.pipe_component_selection_info.get("fallback_label"),
+            "pipe_lock_active": bool(self.pipe_lock_model is not None),
+            "pipe_lock_missed_frames": int(self.pipe_lock_missed_frames),
+            "pipe_lock_source": self.pipe_lock_source,
+            "pipe_lock_selection_score": self.pipe_component_selection_info.get("score"),
+            "pipe_lock_axis_delta_deg": self.pipe_component_selection_info.get("lock_axis_delta_deg"),
+            "pipe_lock_radius_delta_m": self.pipe_component_selection_info.get("lock_radius_delta_m"),
+            "pipe_lock_stand_delta_m": self.pipe_component_selection_info.get("lock_stand_delta_m"),
+            "pipe_lock_axis_point_delta_m": self.pipe_component_selection_info.get("lock_axis_point_delta_m"),
             "pipe_axis_camera_xyz": _round_list(tracker.pipe_axis_xyz),
             "pipe_centroid_camera_xyz_m": _round_list(tracker.centroid_xyz_m),
             "pipe_pose_fit_method": tracker.pipe_pose_fit_method,
@@ -2542,8 +2568,6 @@ class OnlinePipeJunctionDetector:
         image = PilImage.fromarray(rgb, mode="RGB").convert("RGBA")
         overlay = np.zeros((image.height, image.width, 4), dtype=np.uint8)
         overlay[tracker.pipe_mask] = (20, 190, 90, 70)
-        if seam.yolo_seg_mask is not None and seam.yolo_seg_detected:
-            overlay[seam.yolo_seg_mask] = (40, 120, 255, 95)
         image = PilImage.alpha_composite(image, PilImage.fromarray(overlay, mode="RGBA"))
         draw = ImageDraw.Draw(image)
 
@@ -2733,6 +2757,33 @@ class AceaPipeJunctionNode(Node):
             "sample_stride": 4,
             "max_pca_points": 60000,
             "min_pipe_pixels": 1000,
+            "use_cylinder_component_selection": True,
+            "cylinder_component_max_components": 8,
+            "cylinder_component_consensus_iterations": 2,
+            "cylinder_component_radius_tolerance_m": 0.035,
+            "cylinder_component_min_inliers": 180,
+            "cylinder_component_min_inlier_fraction": 0.22,
+            "cylinder_component_radius_abs_margin_m": 0.08,
+            "cylinder_component_radius_rel_margin": 0.75,
+            "cylinder_component_max_residual_m": 0.05,
+            "pipe_component_require_valid_cylinder": True,
+            "pipe_component_shape_prior_enabled": False,
+            "pipe_component_min_width_fraction": 0.28,
+            "pipe_component_bottom_margin_fraction": 0.05,
+            "pipe_component_bottom_allow_width_fraction": 0.55,
+            "enable_pipe_temporal_lock": True,
+            "pipe_lock_reject_global_when_locked": True,
+            "pipe_lock_release_on_missed": False,
+            "pipe_lock_max_missed_frames": 6,
+            "pipe_lock_radius_abs_margin_m": 0.09,
+            "pipe_lock_radius_rel_margin": 0.80,
+            "pipe_lock_max_radius_delta_m": 0.10,
+            "pipe_lock_max_axis_delta_deg": 50.0,
+            "pipe_lock_max_standoff_delta_m": 0.75,
+            "pipe_lock_max_axis_point_delta_m": 0.90,
+            "pipe_lock_min_inlier_fraction": 0.20,
+            "pipe_lock_max_residual_m": 0.07,
+            "pipe_lock_min_compatibility_score": 0.005,
             "use_cylinder_consensus_pipe_pose": True,
             "pipe_pose_consensus_iterations": 2,
             "pipe_pose_radius_tolerance_m": 0.08,
@@ -2747,7 +2798,7 @@ class AceaPipeJunctionNode(Node):
             "strong_dark_contrast": 0.06,
             "accept_confidence": 0.25,
             "min_confidence": 0.25,
-            "junction_acceptance_mode": "rgb_depth",
+            "junction_acceptance_mode": "variant_a_rgb",
             # Variant A (deterministic RGB-only) frontend params (mode == "variant_a_rgb").
             "variant_a_tophat_se_len_px": 21,
             "variant_a_min_vertical_run_px": 100,
@@ -2814,33 +2865,12 @@ class AceaPipeJunctionNode(Node):
             "rgb_temporal_continuity_chroma_delta_reject": 0.035,
             "rgb_temporal_continuity_texture_delta_reject": 0.020,
             "rgb_temporal_continuity_coverage_delta_reject": 0.25,
-            "use_yolo_seg_frontend": False,
-            "yolo_model_path": "",
-            "yolo_python_site_packages": "",
-            "yolo_config_dir": "/tmp/acea_yolo_ultralytics",
-            "yolo_conf_threshold": 0.25,
-            "yolo_imgsz": 640,
-            "yolo_device": 0,
-            "yolo_allow_cpu_fallback": True,
-            "yolo_class_name": "",
-            "yolo_min_mask_area_px": 12,
-            "yolo_max_mask_area_fraction": 0.20,
-            "yolo_min_strip_overlap_px": 6,
-            "enable_yolo_weak_depth_gap_support": True,
-            "yolo_weak_depth_gap_min_score_m": 0.00020,
-            "yolo_weak_depth_gap_min_confidence": 0.25,
-            "enable_weak_rgb_depth_support": True,
-            "weak_rgb_min_dark_contrast": 0.006,
-            "weak_rgb_min_z_score": 4.0,
-            "weak_rgb_strong_z_score": 8.0,
-            "weak_rgb_confidence_scale": 1.0,
-            "use_depth_gap_gate": True,
+            "rgb_local_min_z_score": 4.0,
+            "rgb_local_strong_z_score": 8.0,
             "depth_gap_neighbor_offset_px": 10,
             "depth_gap_band_half_width_px": 2,
-            "min_depth_gap_m": 0.00038,
-            "min_depth_gap_coverage_drop": 0.015,
-            "min_depth_gap_score_m": 0.0,
-            "max_depth_gap_score_m": 0.0,
+            "depth_gap_diagnostic_min_score_m": 0.00038,
+            "depth_gap_diagnostic_min_coverage_drop": 0.015,
             "depth_gap_coverage_score_scale_m": 0.1,
             "min_depth_gap_samples": 32,
             "enable_temporal_scan_change": True,
@@ -3286,6 +3316,22 @@ class AceaPipeJunctionNode(Node):
             "klt_dx_px": status.get("klt_dx_px"),
             "rgb_dark_accepted": status.get("rgb_dark_accepted"),
             "depth_gap_accepted": status.get("depth_gap_accepted"),
+            "pipe_component_selection_method": status.get("pipe_component_selection_method"),
+            "pipe_component_count": status.get("pipe_component_count"),
+            "pipe_component_candidate_count": status.get("pipe_component_candidate_count"),
+            "pipe_component_rejected_by_shape": status.get("pipe_component_rejected_by_shape"),
+            "pipe_component_cylinder_evaluated": status.get("pipe_component_cylinder_evaluated"),
+            "pipe_component_cylinder_valid": status.get("pipe_component_cylinder_valid"),
+            "pipe_component_selected_label": status.get("pipe_component_selected_label"),
+            "pipe_component_fallback_label": status.get("pipe_component_fallback_label"),
+            "pipe_lock_active": status.get("pipe_lock_active"),
+            "pipe_lock_missed_frames": status.get("pipe_lock_missed_frames"),
+            "pipe_lock_source": status.get("pipe_lock_source"),
+            "pipe_lock_selection_score": status.get("pipe_lock_selection_score"),
+            "pipe_lock_axis_delta_deg": status.get("pipe_lock_axis_delta_deg"),
+            "pipe_lock_radius_delta_m": status.get("pipe_lock_radius_delta_m"),
+            "pipe_lock_stand_delta_m": status.get("pipe_lock_stand_delta_m"),
+            "pipe_lock_axis_point_delta_m": status.get("pipe_lock_axis_point_delta_m"),
             "gap_plane_available": bool(status.get("gap_plane_available", False)),
             "weld_seam_pose_available": bool(status.get("weld_seam_pose_available", False)),
             "frame_id": status.get("frame_id"),

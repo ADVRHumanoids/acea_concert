@@ -30,18 +30,23 @@ Usage (run AFTER weld_sim is up, INSTEAD of the plain detection.launch.py):
     ros2 launch acea_concert arm_camera_detection.launch.py camera_name:=camera_F
 """
 import os
+import signal
+import socket
+import subprocess
+import tempfile
+import time
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction, TimerAction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, RegisterEventHandler, TimerAction
+from launch.event_handlers import OnShutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
 def _bridge_and_detector(context, *args, **kwargs):
     cam = LaunchConfiguration("camera_name").perform(context)
-    start_bridge = LaunchConfiguration("start_bridge").perform(context).lower() in (
-        "1", "true", "yes", "on")
+    start_bridge = _truthy(LaunchConfiguration("start_bridge").perform(context))
     detector_start_delay_s = float(LaunchConfiguration("detector_start_delay_s").perform(context))
     camera_qos_reliability = LaunchConfiguration("camera_qos_reliability").perform(context)
     rgb = f"/{cam}/color/image_raw"
@@ -77,9 +82,7 @@ def _bridge_and_detector(context, *args, **kwargs):
         output="screen",
         parameters=[
             detector_config,
-            {"use_yolo_seg_frontend": False},
             {"junction_acceptance_mode": "variant_a_rgb"},
-            {"use_depth_gap_gate": True},
             {"rgb_topic": rgb},
             {"depth_topic": depth},
             {"camera_info_topic": info},
@@ -104,11 +107,96 @@ def _bridge_and_detector(context, *args, **kwargs):
     return actions
 
 
+def _truthy(text):
+    return str(text).lower() in ("1", "true", "yes", "on")
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except OSError:
+        return False
+
+
+def _kill_pid(pid, label, timeout_s=1.0):
+    pid = int(pid)
+    if pid <= 1 or not _pid_alive(pid):
+        return
+    print(f"[arm_camera_detection] stopping previous {label} pid={pid}")
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.05)
+    if _pid_alive(pid):
+        print(f"[arm_camera_detection] previous {label} pid={pid} did not exit; SIGKILL")
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+
+def _kill_lock_holder(lock_name):
+    path = os.path.join(tempfile.gettempdir(), f"{lock_name}.lock")
+    try:
+        holder = open(path, "r", encoding="utf-8").read().strip()
+    except OSError:
+        return
+    if ":" not in holder:
+        return
+    host, pid_text = holder.rsplit(":", 1)
+    if host and host != socket.gethostname():
+        print(f"[arm_camera_detection] not killing {lock_name}: holder is on another host ({holder})")
+        return
+    try:
+        pid = int(pid_text)
+    except ValueError:
+        return
+    _kill_pid(pid, lock_name)
+
+
+def _pkill_pattern(pattern, label):
+    result = subprocess.run(
+        ["pgrep", "-f", pattern],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    for line in result.stdout.splitlines():
+        try:
+            pid = int(line.strip())
+        except ValueError:
+            continue
+        if pid != os.getpid():
+            _kill_pid(pid, label)
+
+
+def _clean_previous_stack(context, *args, **kwargs):
+    if not _truthy(LaunchConfiguration("clean_start").perform(context)):
+        return []
+    cam = LaunchConfiguration("camera_name").perform(context)
+    print("[arm_camera_detection] clean_start:=true; stopping previous detector stack if present")
+    _kill_lock_holder("acea_pipe_junction_node")
+    _kill_lock_holder("gap_pose_robot_node")
+    _pkill_pattern(rf"parameter_bridge.*\/{cam}\/image", f"{cam}_arm_camera_bridge")
+    _pkill_pattern(rf"parameter_bridge.*\/{cam}\/depth_image", f"{cam}_arm_camera_bridge")
+    return []
+
+
 def generate_launch_description() -> LaunchDescription:
     return LaunchDescription([
         DeclareLaunchArgument(
             "camera_name", default_value="camera_F",
             description="Arm camera name = gz topic prefix /<camera_name>/{image,depth_image,camera_info}."),
+        DeclareLaunchArgument(
+            "clean_start", default_value="true",
+            description="Terminate any previous same-host detector/gap-pose/arm-camera-bridge stack before starting."),
         DeclareLaunchArgument(
             "start_bridge", default_value="true",
             description="Start the GZ->ROS bridge for the arm camera (set false if it is bridged elsewhere)."),
@@ -118,5 +206,9 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             "camera_qos_reliability", default_value="reliable",
             description="camera_F bridge offers reliable Image QoS; use reliable subscriptions by default."),
+        OpaqueFunction(function=_clean_previous_stack),
         OpaqueFunction(function=_bridge_and_detector),
+        RegisterEventHandler(OnShutdown(on_shutdown=[
+            OpaqueFunction(function=_clean_previous_stack),
+        ])),
     ])

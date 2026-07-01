@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
 Launch the CONCERT welding robot (concert_with_torch) in Gazebo.
-
+ 
 Usage:
     ros2 launch acea_concert weld_sim.launch.py
     ros2 launch acea_concert weld_sim.launch.py gui:=false
     ros2 launch acea_concert weld_sim.launch.py xbot2:=false
     ros2 launch acea_concert weld_sim.launch.py rviz:=true
 """
-
+ 
 import os
 import math
 from pathlib import Path
 import sys
-
+ 
 import scipy
-
+ 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, SetEnvironmentVariable, TimerAction
@@ -23,24 +23,24 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
-
-
+ 
+ 
 PATH_TO_CONCERT_WS = Path("/home/user/concert_ws")
 PATH_TO_ACEA_CONCERT = PATH_TO_CONCERT_WS / "src" / "acea_concert"
 PATH_TO_MODULAR_PYTHON = PATH_TO_CONCERT_WS / "src" / "modular" / "src"
 MODULAR_DESCRIPTION = str(PATH_TO_ACEA_CONCERT / "src" / "modular" / "concert_with_torch.py")
 GZ_RESOURCE_PATH = str(PATH_TO_CONCERT_WS / "install" / "share")
 MAT_FILE = PATH_TO_ACEA_CONCERT / "mat_files" / "weld_concert.mat"
-
+ 
 if not MAT_FILE.exists():
   print(f"File not found: {MAT_FILE}")
   sys.exit(1)
-
+ 
 # ── Pipe geometry & placement from weld_opt MAT file ────────────────────────
 matdata = scipy.io.loadmat(str(MAT_FILE))
 init_pos_robot = matdata['initial_robot_pose'][0]
 pipe_center = matdata['pos_center_pipe'].reshape(3)
-
+ 
 def _mat_scalar(name: str, default: float) -> float:
     if name not in matdata:
         print(
@@ -50,8 +50,8 @@ def _mat_scalar(name: str, default: float) -> float:
         )
         return float(default)
     return float(matdata[name].reshape(-1)[0])
-
-
+ 
+ 
 PIPE_RADIUS = _mat_scalar('radius_pipe', 0.1)
 PIPE_TOTAL_LENGTH = _mat_scalar('length_pipe', 5.0)
 # The current MAT file has no pipe_gap. Default to a 1 cm visible junction for
@@ -60,7 +60,7 @@ PIPE_GAP = _mat_scalar('pipe_gap', 0.01)
 PIPE_X = float(pipe_center[0])
 PIPE_Y = float(pipe_center[1])
 PIPE_Z = float(pipe_center[2])
-
+ 
 PIPE_SDF_TEMPLATE = """<?xml version="1.0" ?>
 <sdf version="1.6">
   <model name="{name}">
@@ -133,16 +133,16 @@ BLACK_BACKDROP_SDF_TEMPLATE = """<?xml version="1.0" ?>
   </model>
 </sdf>"""
 # ─────────────────────────────────────────────────────────────────────────────
-
-
+ 
+ 
 def _float_launch_config(context, name):
     return float(LaunchConfiguration(name).perform(context))
-
-
+ 
+ 
 def _bool_launch_config(context, name):
     return LaunchConfiguration(name).perform(context).lower() in ("1", "true", "yes", "on")
-
-
+ 
+ 
 def _spawn_pipe_actions(context, *args, **kwargs):
     pipe_offset_x = _float_launch_config(context, "pipe_offset_x")
     pipe_offset_y = _float_launch_config(context, "pipe_offset_y")
@@ -196,7 +196,7 @@ def _spawn_pipe_actions(context, *args, **kwargs):
     )
     pipe_offset_x = pipe_half_center_offset * pipe_y_axis[0]
     pipe_offset_y = pipe_half_center_offset * pipe_y_axis[1]
-
+ 
     actions = [
         # Spawn two pipe halves with a small gap. With the default nominal frame
         # the robot starts centered 2 m from the pipe. pipe_y_axis_yaw rotates
@@ -289,10 +289,10 @@ def _spawn_pipe_actions(context, *args, **kwargs):
             )
         )
     return actions
-
-
+ 
+ 
 def generate_launch_description():
-
+ 
     # Ensure Gazebo can find the meshes
     gz_resource_env = SetEnvironmentVariable(
         name="GZ_SIM_RESOURCE_PATH",
@@ -361,11 +361,11 @@ def generate_launch_description():
         ],
         output="screen",
     )
-
+ 
     return LaunchDescription([
         gz_resource_env,
         modular_python_env,
-
+ 
         DeclareLaunchArgument("gui",       default_value="true",  description="Launch Gazebo GUI"),
         DeclareLaunchArgument("xbot2",     default_value="true",  description="Launch XBot2"),
         DeclareLaunchArgument("rviz",      default_value="false", description="Launch RViz"),
@@ -401,10 +401,10 @@ def generate_launch_description():
                               description="Pipe center Y in the robot nominal start frame [m]"),
         DeclareLaunchArgument("pipe_y_axis_yaw", default_value="0.0",
                               description="Yaw of the pipe/gap Y axis from nominal +Y around world Z [rad]"),
-
+ 
         robot_state_publisher_node,
         front_camera_bridge_node,
-
+ 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
                 get_package_share_directory("concert_gazebo"), "launch", "modular.launch.py"
@@ -420,6 +420,8 @@ def generate_launch_description():
                 "world_file":          gazebo_world_file_with_headless_flag,
             }.items(),
         ),
-
+ 
         OpaqueFunction(function=_spawn_pipe_actions),
     ])
+ 
+ 

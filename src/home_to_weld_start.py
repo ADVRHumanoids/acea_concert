@@ -51,21 +51,19 @@ def fetch_robot_description(node_name: str):
     return vals[0].string_value, vals[1].string_value
 
 
-def load_home_trajectory(mat_file: Path):
+def load_home_map(mat_file: Path):
     mat_data = loadmat(str(mat_file))
-    has_homing = "q_homing" in mat_data
-    q_traj = mat_data["q_homing"] if has_homing else mat_data["q"][:, :1]
+    q_traj = mat_data["q"]
     all_jnames = [str(n).strip() for n in mat_data["joint_names"].flatten()]
     jnames = [name for name in all_jnames if name not in VIRTUAL_JOINTS]
 
     q_act = q_traj[7:, :]
-    dt_key = "q_homing_dt" if has_homing else "dt"
-    dt = float(np.asarray(mat_data.get(dt_key, [[0.01]])).reshape(-1)[0])
+    q_home_act = q_act[:, 0]
     return {
-        name: q_act[i, :].astype(float)
+        name: float(q_home_act[i])
         for i, name in enumerate(jnames)
         if name in WELD_JOINTS
-    }, dt, "q_homing" if has_homing else "q[:, 0]"
+    }
 
 
 def build_robot_interface(urdf: str, srdf: str):
@@ -112,26 +110,6 @@ def ramp_to_home(robot, home_joints: dict[str, float],
     return interp_map
 
 
-def follow_home_trajectory(robot, home_trajectory: dict[str, np.ndarray],
-                           dt: float):
-    robot.sense()
-    command_map = robot.qToMap(robot.getPositionReferenceFeedback())
-    nodes = len(next(iter(home_trajectory.values())))
-
-    for node in range(nodes):
-        for name, trajectory in home_trajectory.items():
-            command_map[name] = float(trajectory[node])
-        robot.setPositionReference(robot.mapToQ(command_map))
-        robot.move()
-        sleep(dt)
-
-    robot.sense()
-    return {
-        name: float(trajectory[-1])
-        for name, trajectory in home_trajectory.items()
-    }
-
-
 def print_tracking_error(robot, target_map: dict[str, float],
                          urdf: str, srdf: str):
     motor_map = robot.qToMap(robot.getJointPosition())
@@ -164,7 +142,6 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--mat-file", type=Path, default=DEFAULT_MAT_FILE)
     parser.add_argument("--duration", type=float, default=5.0)
     parser.add_argument("--dt", type=float, default=0.01)
-    parser.add_argument("--start-tolerance", type=float, default=0.05)
 
     args = parser.parse_args(remove_ros_args(args=argv)[1:])
     if not args.mat_file.exists():
@@ -183,8 +160,8 @@ def main(argv=None) -> None:
     rclpy.init(args=raw_argv)
     try:
         print(f"[home_to_weld_start] Loading home target from {args.mat_file}")
-        home_traj, home_dt, home_source = load_home_trajectory(args.mat_file)
-        if not home_traj:
+        home_map = load_home_map(args.mat_file)
+        if not home_map:
             raise RuntimeError("No weld joints found in MAT trajectory.")
 
         print("[home_to_weld_start] Waiting for robot_description...")
@@ -197,46 +174,26 @@ def main(argv=None) -> None:
         robot_q_map = robot.qToMap(robot.getPositionReferenceFeedback())
         robot_joint_names = set(robot_q_map.keys())
         commanded_joints = [
-            name for name in home_traj.keys()
+            name for name in home_map.keys()
             if name in robot_joint_names
         ]
         if not commanded_joints:
             raise RuntimeError("No weld joints are available on RobotInterface2.")
 
-        missing = sorted(set(home_traj.keys()) - set(commanded_joints))
+        missing = sorted(set(home_map.keys()) - set(commanded_joints))
         if missing:
             print(f"[home_to_weld_start] Skipping unavailable joints: {missing}")
 
-        home_trajectory = {
-            name: home_traj[name]
+        home_joints = {
+            name: home_map[name]
             for name in commanded_joints
         }
         print(
             f"[home_to_weld_start] Homing {commanded_joints} "
-            f"from {home_source}")
+            f"over {args.duration:.2f}s")
 
         command_weld_position_mode(robot, commanded_joints)
-        if home_source == "q_homing":
-            start_error = {
-                name: abs(robot_q_map[name] - float(trajectory[0]))
-                for name, trajectory in home_trajectory.items()
-            }
-            worst_joint, worst_error = max(
-                start_error.items(), key=lambda item: item[1])
-            if worst_error > args.start_tolerance:
-                raise RuntimeError(
-                    "Current arm pose is not the planned q_homing start. "
-                    f"Worst joint: {worst_joint} error={worst_error:.4f}. "
-                    "Do not execute this homing trajectory from here.")
-            final_target = follow_home_trajectory(
-                robot, home_trajectory, home_dt)
-        else:
-            home_joints = {
-                name: float(trajectory[-1])
-                for name, trajectory in home_trajectory.items()
-            }
-            final_target = ramp_to_home(
-                robot, home_joints, args.duration, args.dt)
+        final_target = ramp_to_home(robot, home_joints, args.duration, args.dt)
         print_tracking_error(robot, final_target, urdf, srdf)
         print("[home_to_weld_start] Homing complete.")
     finally:

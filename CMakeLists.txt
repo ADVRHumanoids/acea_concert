@@ -17,6 +17,8 @@ install(PROGRAMS
   src/controller.py
   src/circular_trajectory.py
   src/collision_checker.py
+  src/homing_trajectory.py
+  src/plan_homing_from_mat.py
   src/gap_pose_publisher.py
   src/plot_weld_result.py
   DESTINATION lib/${PROJECT_NAME}

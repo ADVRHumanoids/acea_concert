@@ -103,7 +103,7 @@ pipe_gap = 0.005
 pos_center_pipe = [1.5, 0.0, 1.5]
 orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
 
-OPTIMIZE_PIPE_HEIGHT = True
+OPTIMIZE_PIPE_HEIGHT = False
 margin_around_pipe_height = 1.0 # how much the pipe height can be optimized around the nominal height (in both directions)
 pipe_z_bounds = (pos_center_pipe[2] - margin_around_pipe_height, pos_center_pipe[2] + margin_around_pipe_height)
 MINIMIZE_CRITICAL_JOINT_TORQUES = True

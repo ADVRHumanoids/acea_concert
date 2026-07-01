@@ -9,6 +9,31 @@ The workflow is split into two parts:
 1. Offline: run `weld_opt.py`, optionally replay with `replayer.py`, and inspect the RViz visualization.
 2. Online: launch simulation, start XBot GUI, publish the current gap pose, compensate gravity, home to the optimized start, drive the base to the optimized pose, and run the controller.
 
+## 0. Docker Environment
+
+Start the Docker container before running the offline or online pipeline:
+
+```bash
+xhost +local:docker
+cd /home/user/concert_ws/src/acea_concert/docker
+docker compose up -d --build
+docker compose exec dev bash
+```
+
+Open another terminal in the same running container when needed:
+
+```bash
+cd /home/user/concert_ws/src/acea_concert/docker
+docker compose exec dev bash
+```
+
+Stop the container when finished:
+
+```bash
+cd /home/user/concert_ws/src/acea_concert/docker
+docker compose down
+```
+
 ## 1. Offline Optimization
 
 Command pipeline:
@@ -16,6 +41,7 @@ Command pipeline:
 ```bash
 cd /home/user/concert_ws/src/acea_concert
 python3 src/weld_opt.py
+python3 src/plan_homing_from_mat.py
 python3 src/replayer.py
 rviz2 -d rviz/rviz_config.rviz
 ```
@@ -45,6 +71,13 @@ mat_files/weld_concert.mat
 ```
 
 The MAT file contains the optimized joint trajectory, the pipe/gap geometry, and the weld trajectory expressed in the gap frame. The online controller expects this file to exist before starting the simulation.
+
+Optionally plan a collision-aware homing trajectory and save it back into the MAT file as `q_homing`:
+
+```bash
+cd /home/user/concert_ws/src/acea_concert
+python3 src/plan_homing_from_mat.py
+```
 
 Optionally replay the optimized trajectory:
 
@@ -109,92 +142,11 @@ ros2 launch acea_concert weld_sim.launch.py
 
 This launches the robot simulation and spawns the two pipe halves using the geometry stored in `mat_files/weld_concert.mat`.
 
-Useful simulation launch arguments:
-
-```text
-gui:=false                         run Gazebo headless
-xbot2:=false                       start only Gazebo/robot/cameras, no XBot2
-rviz:=false                        do not start RViz
-realsense:=true                    include the D435i cameras
-publish_robot_state_tf:=true       publish base_link -> D435i camera TF
-start_front_camera_bridges:=true   publish front D435i RGB/depth/camera_info from Gazebo to ROS
-pipe_gap_m:=0.01                   gap between the two pipe halves
-pipe_z_m:=0.75                     pipe height used for the camera-facing debug scene
-spawn_gap_visual_marker:=true      add a short black cylindrical filler in the junction
-gap_visual_marker_width_m:=-1.0    <=0 means filler length follows pipe_gap_m
-spawn_gap_front_visual_stripe:=false optional flat debug stripe; keep false for the current filler test
-spawn_gap_black_backdrop:=false    optional black panel behind the pipe
-```
-
-Current perception-debug scene:
+To use a different optimization result, pass `mat_file`. To start with the gap at the optimized pose relative to the robot, add `optimized_start:=true`:
 
 ```bash
-ros2 launch acea_concert weld_sim.launch.py \
-  gui:=true \
-  xbot2:=false \
-  rviz:=false \
-  realsense:=true \
-  publish_robot_state_tf:=true \
-  start_front_camera_bridges:=true \
-  pipe_gap_m:=0.01 \
-  pipe_z_m:=0.75 \
-  spawn_gap_visual_marker:=true \
-  spawn_gap_front_visual_stripe:=false
+ros2 launch acea_concert weld_sim.launch.py mat_file:=mat_files/weld_concert.mat optimized_start:=true
 ```
-
-The current defaults are:
-
-```text
-pipe_gap_m = 0.01
-pipe_z_m = 0.75
-spawn_gap_visual_marker = true
-spawn_gap_front_visual_stripe = false
-spawn_gap_black_backdrop = false
-realsense = true
-publish_robot_state_tf = true
-start_front_camera_bridges = true
-```
-
-`weld_sim.launch.py` intentionally uses the ACEA world:
-
-```text
-world/empty_world_no_ros2_camera_system.sdf
-```
-
-This is the standard CONCERT empty world with the unavailable
-`Ros2CameraSystem` plugin removed. The front D435i ROS topics are bridged
-explicitly by this launch file instead:
-
-```text
-/D435i_camera_front/color/image_raw
-/D435i_camera_front/depth_image
-/D435i_camera_front/camera_info
-```
-
-If you see this error, the old `concert_gazebo` world is being used instead of
-the ACEA world, or the package was not rebuilt/sourced after editing:
-
-```text
-Failed to load system plugin [Ros2CameraSystem]
-```
-
-This creates a 1 cm junction with a short black cylindrical filler at the gap.
-It is meant as a stable perception/debug scene where the robot-mounted D435i
-camera sees a full dark junction band, not an external camera view. For a
-narrower target gap:
-
-```bash
-ros2 launch acea_concert weld_sim.launch.py \
-  gui:=false \
-  xbot2:=false \
-  rviz:=false \
-  pipe_gap_m:=0.003
-```
-
-The short black cylindrical filler is preferred over the flat stripe for the
-current simulation smoke test because it fills the actual junction volume. The
-flat stripe is only a visual/debug aid and can interfere with manipulation tests
-that rely on the pipe geometry.
 
 ### XBot GUI
 
@@ -641,8 +593,9 @@ base_R_ee_des = base_R_gap * gap_R_ee_des
 ## Main Files
 
 - `src/weld_opt.py`: offline trajectory optimization and MAT file generation.
+- `src/plan_homing_from_mat.py`: adds a collision-aware `q_homing` trajectory to a MAT file.
 - `src/replayer.py`: replay and RViz visualization of the optimized trajectory.
-- `launch/weld_sim.launch.py`: simulation launch file.
+- `launch/weld_sim.launch.py`: simulation launch file; accepts `mat_file` and `optimized_start`.
 - `src/gap_pose_publisher.py`: simulation ground-truth gap pose publisher.
 - `launch/detection.launch.py`: perception launch file for detector + gap pose transform.
 - `src/detection/acea_pipe_junction_node.py`: RGB-D gap detector and camera-frame gap plane publisher.

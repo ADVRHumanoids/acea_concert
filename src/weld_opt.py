@@ -95,23 +95,21 @@ if not (SKIP_RVIZ_SCENE and SKIP_REPLAY):
 kin_dyn = casadi_kin_dyn.CasadiKinDyn(urdf)
 # print(f"joint names: {kin_dyn.joint_names()}")
 
-# Apply circular trajectory for ee_F
-
 footprint_robot_x = 1.2
 footprint_robot_y = 0.7
 
 length_pipe = 5.0
-pipe_gap = 0.01
+pipe_gap = 0.005
 pos_center_pipe = [1.5, 0.0, 1.5]
 orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
 
-OPTIMIZE_PIPE_HEIGHT = True
+OPTIMIZE_PIPE_HEIGHT = False
 margin_around_pipe_height = 1.0 # how much the pipe height can be optimized around the nominal height (in both directions)
 pipe_z_bounds = (pos_center_pipe[2] - margin_around_pipe_height, pos_center_pipe[2] + margin_around_pipe_height)
 MINIMIZE_CRITICAL_JOINT_TORQUES = True
 TORQUE_COST_WEIGHT = 1e-1
 CRITICAL_TORQUE_JOINTS = ('J1_E', 'J2_E', 'J1_F', 'J2_F', 'J3_F', 'J4_F', 'J5_F', 'J6_F')
-radius_pipe = 0.1 # 0.15, 0.25, 0.35 available
+radius_pipe = 0.15 # 0.15, 0.25, 0.35 available
 weld_standoff_from_pipe = 0.02  # EE path distance from pipe surface [m]
 weld_trajectory_radius = radius_pipe + weld_standoff_from_pipe
 if weld_trajectory_radius <= 0.0:
@@ -121,8 +119,12 @@ if weld_trajectory_radius <= 0.0:
     )
 
 trajectory_scenario_name = 'manual'
-angle_weld_start = 1 / 2 * np.pi
+# angle_weld_start = np.pi
+# angle_weld_end = 2 * np.pi
+
+angle_weld_start = 1/2 * np.pi
 angle_weld_end = np.pi
+
 weld_upside_down = False
 
 trajectory_scenario_name = os.environ.get(

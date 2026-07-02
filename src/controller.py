@@ -84,8 +84,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help=(
-            "Stop before sending another command if /gap/pose_robot is missing "
-            "or stale."
+            "Pause before sending another command if /gap/pose_robot becomes "
+            "stale. The first gap pose is always required."
         ),
     )
     parser.add_argument(
@@ -224,25 +224,28 @@ input("[controller] Press Enter to start the control loop.")
 while True:
     t0 = perf_counter()
 
-    if args.stop_on_gap_loss:
-        gap_pose_age_s = controller_ros.gap_pose_age_s()
-        gap_pose_fresh = controller_ros.gap_pose_is_fresh(args.gap_pose_timeout)
-        if not gap_pose_fresh:
-            if not gap_pose_paused:
-                age_text = (
-                    "never received"
-                    if gap_pose_age_s is None
-                    else f"stale for {gap_pose_age_s:.3f}s"
-                )
-                print(f"[controller] Lost /gap/pose_robot ({age_text}); pausing.")
-                gap_pose_paused = True
-            elapsed = perf_counter() - t0
-            sleep(max(0.0, DT - elapsed))
-            continue
+    gap_pose_age_s = controller_ros.gap_pose_age_s()
+    gap_pose_fresh = controller_ros.gap_pose_is_fresh(args.gap_pose_timeout)
+    should_pause_for_gap = (
+        gap_pose_age_s is None
+        or (args.stop_on_gap_loss and not gap_pose_fresh)
+    )
+    if should_pause_for_gap:
+        if not gap_pose_paused:
+            age_text = (
+                "never received"
+                if gap_pose_age_s is None
+                else f"stale for {gap_pose_age_s:.3f}s"
+            )
+            print(f"[controller] Lost /gap/pose_robot ({age_text}); pausing.")
+            gap_pose_paused = True
+        elapsed = perf_counter() - t0
+        sleep(max(0.0, DT - elapsed))
+        continue
 
-        if gap_pose_paused:
-            print("[controller] /gap/pose_robot fresh again; resuming.")
-            gap_pose_paused = False
+    if gap_pose_paused:
+        print("[controller] /gap/pose_robot available; resuming.")
+        gap_pose_paused = False
 
     # Slow down the trajectory by scaling time
     t_traj = t / TRAJ_SLOWDOWN

@@ -1,4 +1,5 @@
 import threading
+from time import monotonic
 
 import numpy as np
 import rclpy
@@ -74,6 +75,7 @@ class ControllerRosInterface:
         self._gap_x_axis_base: np.ndarray | None = None
         self._gap_y_axis_base: np.ndarray | None = None
         self._gap_z_axis_base: np.ndarray | None = None
+        self._last_gap_pose_time: float | None = None
 
         self.node.create_subscription(
             PoseStamped, '/gap/pose_robot', self._on_gap_pose_robot, 10)
@@ -105,6 +107,15 @@ class ControllerRosInterface:
             self._gap_y_axis_base.copy(),
             self._gap_z_axis_base.copy(),
         )
+
+    def gap_pose_age_s(self) -> float | None:
+        if self._last_gap_pose_time is None:
+            return None
+        return monotonic() - self._last_gap_pose_time
+
+    def gap_pose_is_fresh(self, timeout_s: float) -> bool:
+        age = self.gap_pose_age_s()
+        return age is not None and age <= timeout_s
 
     def controller_gains(self) -> dict[str, float]:
         return {
@@ -146,22 +157,22 @@ class ControllerRosInterface:
         return value
 
     def _on_gap_pose_robot(self, msg: PoseStamped):
-        self._gap_origin_base = np.array([
-            msg.pose.position.x,
-            msg.pose.position.y,
-            msg.pose.position.z,
-        ], dtype=float)
-
         quat = msg.pose.orientation
         q = np.array([quat.x, quat.y, quat.z, quat.w], dtype=float)
         norm = np.linalg.norm(q)
         if norm <= 1e-9:
             return
 
+        self._gap_origin_base = np.array([
+            msg.pose.position.x,
+            msg.pose.position.y,
+            msg.pose.position.z,
+        ], dtype=float)
         base_R_gap = R.from_quat(q / norm).as_matrix()
         self._gap_x_axis_base = self._unit_axis(base_R_gap[:, 0])
         self._gap_y_axis_base = self._unit_axis(base_R_gap[:, 1])
         self._gap_z_axis_base = self._unit_axis(base_R_gap[:, 2])
+        self._last_gap_pose_time = monotonic()
 
     def _unit_axis(self, axis: np.ndarray) -> np.ndarray | None:
         norm = np.linalg.norm(axis)

@@ -12,10 +12,13 @@ Usage (simulation must already be running and homing already completed):
     python3 controller.py
 """
 
+import argparse
+import sys
 from pathlib import Path
 from time import sleep, perf_counter
 
 import numpy as np
+from rclpy.utilities import remove_ros_args
 from scipy.io import loadmat
 
 from controller_ros import ControllerRosInterface
@@ -64,11 +67,40 @@ GAIN_PARAM_DEFAULTS = {
 # ── Trajectory slowdown factor ───────────────────────────────────────────────
 TRAJ_SLOWDOWN = 12.0  # 1.0 = normal speed, 2.0 = half speed, etc.
 
+GAP_POSE_TIMEOUT_S = 0.25
+
 # Path to the CartesIO problem description YAML
 CARTESIO_YAML = Path('/home/user/concert_ws/src/acea_concert/config/cartesio_stack.yaml')
 
 # ── Mat file trajectory ───────────────────────────────────────────────────────
 MAT_FILE = Path('/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat')
+
+
+def _parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run the weld end-effector controller.")
+    parser.add_argument(
+        "--stop-on-gap-loss",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Stop before sending another command if /gap/pose_robot is missing "
+            "or stale."
+        ),
+    )
+    parser.add_argument(
+        "--gap-pose-timeout",
+        type=float,
+        default=GAP_POSE_TIMEOUT_S,
+        help="Maximum accepted age for /gap/pose_robot in seconds.",
+    )
+    args = parser.parse_args(remove_ros_args(args=argv)[1:])
+    if args.gap_pose_timeout <= 0.0:
+        parser.error("--gap-pose-timeout must be positive")
+    return args
+
+
+args = _parse_args(sys.argv)
 
 # ── Load weld_opt trajectory from mat file ────────────────────────────────────
 print(f"[controller] Loading trajectory from {MAT_FILE} …")
@@ -187,9 +219,30 @@ x_err_integral = 0.0
 
 # ── Control loop ──────────────────────────────────────────────────────────────
 t = 0.0
+gap_pose_paused = False
 input("[controller] Press Enter to start the control loop.")
 while True:
     t0 = perf_counter()
+
+    if args.stop_on_gap_loss:
+        gap_pose_age_s = controller_ros.gap_pose_age_s()
+        gap_pose_fresh = controller_ros.gap_pose_is_fresh(args.gap_pose_timeout)
+        if not gap_pose_fresh:
+            if not gap_pose_paused:
+                age_text = (
+                    "never received"
+                    if gap_pose_age_s is None
+                    else f"stale for {gap_pose_age_s:.3f}s"
+                )
+                print(f"[controller] Lost /gap/pose_robot ({age_text}); pausing.")
+                gap_pose_paused = True
+            elapsed = perf_counter() - t0
+            sleep(max(0.0, DT - elapsed))
+            continue
+
+        if gap_pose_paused:
+            print("[controller] /gap/pose_robot fresh again; resuming.")
+            gap_pose_paused = False
 
     # Slow down the trajectory by scaling time
     t_traj = t / TRAJ_SLOWDOWN

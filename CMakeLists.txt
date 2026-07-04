@@ -5,6 +5,7 @@ find_package(ament_cmake REQUIRED)
 
 # --- Python scripts (runnable via ros2 run or directly) ---
 install(PROGRAMS
+  scripts/acea_replay_quality_metrics.py
   scripts/apply_gz_wrench.py
   scripts/kill_concert_stack
   scripts/omnisteering_sine_command.py
@@ -42,6 +43,8 @@ install(DIRECTORY src/viz/
 # their `from acea_alignment...` imports resolve under `ros2 run`.
 install(PROGRAMS
   src/detection/acea_pipe_junction_node.py
+  src/detection/acea_pipe_junction_node_v8_dev.py
+  src/detection/acea_pipe_junction_node_v8_complete_dev.py
   src/detection/gap_pose_robot_node.py
   src/detection/acea_seam_detector.py
   src/detection/acea_detection_runtime.py

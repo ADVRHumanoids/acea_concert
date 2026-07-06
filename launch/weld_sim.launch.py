@@ -7,7 +7,7 @@ Usage:
     ros2 launch acea_concert weld_sim.launch.py gui:=false
     ros2 launch acea_concert weld_sim.launch.py xbot2:=false
     ros2 launch acea_concert weld_sim.launch.py rviz:=true
-    ros2 launch acea_concert weld_sim.launch.py mat_file:=mat_files/weld_concert.mat optimized_start:=true
+    ros2 launch acea_concert weld_sim.launch.py mat_file:=mat_files/weld_concert.mat optimized_robot_pose:=true
 """
 
 import os
@@ -140,7 +140,7 @@ def _spawn_pipe_actions(context, *args, **kwargs):
     mat_file, matdata = _load_mat_file(context)
     pipe = _pipe_geometry_from_mat(matdata)
 
-    if _bool_launch_config(context, "optimized_start"):
+    if _bool_launch_config(context, "optimized_robot_pose"):
         pipe_spawn_x, pipe_spawn_y, pipe_y_axis_yaw = (
             _optimized_gap_pose_from_mat(matdata))
         print(
@@ -231,8 +231,8 @@ def generate_launch_description():
         DeclareLaunchArgument("realsense", default_value="true", description="Include RealSense"),
         DeclareLaunchArgument("velodyne",  default_value="false", description="Include Velodyne"),
         DeclareLaunchArgument("mat_file", default_value=str(DEFAULT_MAT_FILE),
-                              description="Optimization MAT file used for pipe geometry and optimized_start"),
-        DeclareLaunchArgument("optimized_start", default_value="false",
+                              description="Optimization MAT file used for pipe geometry and optimized_robot_pose"),
+        DeclareLaunchArgument("optimized_robot_pose", default_value="false",
                               description="Place the gap at the optimized pose relative to the robot from mat_file"),
         DeclareLaunchArgument("pipe_offset_x", default_value="2.0",
                               description="Pipe center X in the robot nominal start frame [m]"),

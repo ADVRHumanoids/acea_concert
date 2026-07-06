@@ -95,6 +95,27 @@ Run in this order:
 6. `drive_base_to_weld_pose.py`
 7. `controller.py`
 
+### Terminal Environment
+
+If you have `tmux`, create one ready-to-launch terminal session:
+
+```bash
+cd /home/user/concert_ws/src/acea_concert
+scripts/concert_tmux
+```
+
+The script opens one tiled tmux window with named panes, sources the
+ROS/XBot/workspace environment in each pane, and leaves the right command typed.
+Click panes and press Enter in the order listed above. If you prefer tmux tabs,
+run `scripts/concert_tmux --windows`.
+
+For a normal terminal, source the same environment manually:
+
+```bash
+cd /home/user/concert_ws/src/acea_concert
+source scripts/concert_env.bash
+```
+
 ### Simulation
 
 ```bash
@@ -104,10 +125,10 @@ ros2 launch acea_concert weld_sim.launch.py
 
 This launches the robot simulation and spawns the two pipe halves using the geometry stored in `mat_files/weld_concert.mat`.
 
-To use a different optimization result, pass `mat_file`. To start with the gap at the optimized pose relative to the robot, add `optimized_start:=true`:
+To use a different optimization result, pass `mat_file`. To start with the gap at the optimized pose relative to the robot, add `optimized_robot_pose:=true`:
 
 ```bash
-ros2 launch acea_concert weld_sim.launch.py mat_file:=mat_files/weld_concert.mat optimized_start:=true
+ros2 launch acea_concert weld_sim.launch.py mat_file:=mat_files/weld_concert.mat optimized_robot_pose:=true
 ```
 
 ### XBot GUI
@@ -119,6 +140,16 @@ Start the XBot GUI after the simulation is running.
 ```bash
 cd /home/user/concert_ws/src/acea_concert
 python3 src/gap_pose_publisher.py
+```
+
+Optional test faults can be added to the published `/gap/pose_robot`:
+
+```bash
+python3 src/gap_pose_publisher.py \
+  --gap-pos-noise-std 0.01 \
+  --gap-rot-noise-std 0.02 \
+  --gap-disconnect-every 10 \
+  --gap-disconnect-duration 2
 ```
 
 This publishes the current gap pose with respect to `base_link`:
@@ -155,6 +186,31 @@ python3 src/drive_base_to_weld_pose.py
 ```bash
 cd /home/user/concert_ws/src/acea_concert
 python3 src/controller.py
+```
+
+To smooth noisy camera gap poses, enable the controller-side low-pass filter:
+
+```bash
+python3 src/controller.py --gap-filter-tau 0.1
+```
+
+With `scripts/concert_env.bash` sourced, the same command is:
+
+```bash
+concert_controller --gap-filter-tau 0.1
+```
+
+`0` disables the filter. A small value like `0.05`-`0.15` seconds is a good starting range.
+
+For slow welding with noisy camera poses, use a history window and reject big
+camera jumps:
+
+```bash
+concert_controller \
+  --gap-filter-history-size 50 \
+  --gap-filter-tau 0.3 \
+  --gap-filter-max-position-jump 0.02 \
+  --gap-filter-max-angle-jump 10
 ```
 
 The controller uses:

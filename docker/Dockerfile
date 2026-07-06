@@ -7,7 +7,7 @@ RUN mkdir -p ~/concert_ws && cd ~/concert_ws && forest init
 RUN echo "source /opt/xbot/setup.sh" >> ~/.bashrc
 RUN echo "source ~/concert_ws/setup.bash" >> ~/.bashrc
 
-RUN sudo apt-get update && sudo apt-get install -y swig
+RUN sudo apt-get update && sudo apt-get install -y swig tmux
 
 WORKDIR /home/user/concert_ws
 

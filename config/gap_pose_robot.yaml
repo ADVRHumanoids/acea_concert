@@ -34,5 +34,13 @@
     require_pose_valid: true
     require_metric_3d: true
     reject_assumed_depth: true
+
+    # The detector can accept sparsely while acquiring/tracking. Keep the
+    # controller input continuous by republishing the last valid gap pose for a
+    # bounded time instead of letting /gap/pose_robot drop to sub-Hz.
+    hold_last_pose: true
+    hold_publish_rate_hz: 20.0
+    hold_max_age_s: 2.5
+
     broadcast_tf: false
     gap_tf_child_frame: gap_seam

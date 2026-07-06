@@ -35,6 +35,7 @@ Run the geometry self-test (no ROS needed):
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import sys
 from pathlib import Path
@@ -244,10 +245,17 @@ def _build_node_class():
             self.reject_assumed_depth = bool(p("reject_assumed_depth", True).value)
             self.broadcast_tf = bool(p("broadcast_tf", False).value)
             self.gap_tf_child_frame = p("gap_tf_child_frame", "gap_seam").value
+            self.hold_last_pose = bool(p("hold_last_pose", False).value)
+            self.hold_publish_rate_hz = float(p("hold_publish_rate_hz", 20.0).value)
+            self.hold_max_age_s = float(p("hold_max_age_s", 2.0).value)
 
             self._warned_fallback = False
             self._warned_no_transform = False
             self._warned_identity_fallback = False
+            self._last_pose_msg = None
+            self._last_matrix_data = None
+            self._last_tf_msg = None
+            self._last_pose_time_ns = None
             self.tf_buffer = tf2_ros.Buffer()
             self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
             self.tf_broadcaster = tf2_ros.TransformBroadcaster(self) if self.broadcast_tf else None
@@ -260,12 +268,15 @@ def _build_node_class():
 
             # Monitor for duplicates the file lock cannot see (another container/host).
             self.create_timer(5.0, self._check_duplicate_graph)
+            if self.hold_last_pose and self.hold_publish_rate_hz > 0.0:
+                self.create_timer(1.0 / self.hold_publish_rate_hz, self._republish_last_pose)
 
             self.get_logger().info(
                 f"gap_pose_robot [{self.instance_id}]: {self.input_topic} (camera frame) -> "
                 f"{self.output_pose_topic} (frame {self.target_frame}); "
                 f"tf={'on' if self.use_tf else 'off'}, "
-                f"static_fallback={'on' if self.static_fallback_enabled else 'off'}")
+                f"static_fallback={'on' if self.static_fallback_enabled else 'off'}, "
+                f"hold_last_pose={'on' if self.hold_last_pose else 'off'}")
 
         def _check_duplicate_graph(self) -> None:
             if count_named_nodes(self) > 1:
@@ -274,6 +285,37 @@ def _build_node_class():
                     f"(this one: {self.instance_id}) — they publish a conflicting "
                     f"{self.output_pose_topic}. Keep exactly one bridge running.",
                     throttle_duration_sec=10.0)
+
+        def _remember_last_pose(self, pose, matrix_data, tf_msg) -> None:
+            if not self.hold_last_pose:
+                return
+            self._last_pose_msg = deepcopy(pose)
+            self._last_matrix_data = None if matrix_data is None else list(matrix_data)
+            self._last_tf_msg = None if tf_msg is None else deepcopy(tf_msg)
+            self._last_pose_time_ns = int(self.get_clock().now().nanoseconds)
+
+        def _republish_last_pose(self) -> None:
+            if not self.hold_last_pose or self._last_pose_msg is None or self._last_pose_time_ns is None:
+                return
+            now = self.get_clock().now()
+            age_s = 1e-9 * float(int(now.nanoseconds) - int(self._last_pose_time_ns))
+            if age_s > max(0.0, self.hold_max_age_s):
+                return
+
+            stamp = now.to_msg()
+            pose = deepcopy(self._last_pose_msg)
+            pose.header.stamp = stamp
+            self.pose_pub.publish(pose)
+
+            if self.matrix_pub is not None and self._last_matrix_data is not None:
+                arr = Float64MultiArray()
+                arr.data = list(self._last_matrix_data)
+                self.matrix_pub.publish(arr)
+
+            if self.tf_broadcaster is not None and self._last_tf_msg is not None:
+                tf_msg = deepcopy(self._last_tf_msg)
+                tf_msg.header.stamp = stamp
+                self.tf_broadcaster.sendTransform(tf_msg)
 
         # -- camera -> target transform ---------------------------------------
         def _resolve_transform(self, camera_frame: str):
@@ -376,6 +418,7 @@ def _build_node_class():
             pose.pose.orientation.w = float(quat[3])
             self.pose_pub.publish(pose)
 
+            matrix_data = None
             if self.matrix_pub is not None:
                 T = np.eye(4)
                 T[:3, :3] = R_gap
@@ -383,7 +426,9 @@ def _build_node_class():
                 arr = Float64MultiArray()
                 arr.data = [float(v) for v in T.reshape(-1)]
                 self.matrix_pub.publish(arr)
+                matrix_data = arr.data
 
+            tf_msg = None
             if self.tf_broadcaster is not None:
                 tf_msg = TransformStamped()
                 tf_msg.header.stamp = stamp
@@ -397,6 +442,8 @@ def _build_node_class():
                 tf_msg.transform.rotation.z = float(quat[2])
                 tf_msg.transform.rotation.w = float(quat[3])
                 self.tf_broadcaster.sendTransform(tf_msg)
+
+            self._remember_last_pose(pose, matrix_data, tf_msg)
 
     return GapPoseRobotNode
 

@@ -69,9 +69,27 @@ def _pipe_halves(center, length, gap, orientation):
     )
 
 
+def _normalize_base_quaternions(path_q):
+    path_q = np.asarray(path_q, dtype=float).copy()
+    if path_q.ndim != 2 or path_q.shape[0] < 7:
+        return path_q
+
+    quat = path_q[3:7]
+    norms = np.linalg.norm(quat, axis=0)
+    valid = norms > 1e-12
+    quat[:, valid] = quat[:, valid] / norms[valid]
+    quat[:, ~valid] = np.array([[0.0], [0.0], [0.0], [1.0]])
+    path_q[3:7] = quat
+    return path_q
+
+
 def _interpolate(q_start, q_goal, steps):
+    q_start = np.asarray(q_start, dtype=float).reshape(-1)
+    q_goal = np.asarray(q_goal, dtype=float).reshape(-1).copy()
+
     alpha = np.linspace(0.0, 1.0, steps + 1)
-    return (1.0 - alpha) * q_start[:, None] + alpha * q_goal[:, None]
+    path = (1.0 - alpha) * q_start[:, None] + alpha * q_goal[:, None]
+    return _normalize_base_quaternions(path)
 
 
 def _initial_guess(q_start, q_goal, steps, mode):
@@ -80,17 +98,18 @@ def _initial_guess(q_start, q_goal, steps, mode):
     if mode == "goal-after-start":
         guess = np.repeat(q_goal[:, None], steps + 1, axis=1)
         guess[:, 0] = q_start
-        return guess
+        return _normalize_base_quaternions(guess)
     raise ValueError(f"Unknown initial guess mode: {mode}")
 
 
 def _resample(path_q, steps):
     old_x = np.linspace(0.0, 1.0, path_q.shape[1])
     new_x = np.linspace(0.0, 1.0, steps + 1)
-    return np.vstack([
+    resampled = np.vstack([
         np.interp(new_x, old_x, path_q[row])
         for row in range(path_q.shape[0])
     ])
+    return _normalize_base_quaternions(resampled)
 
 
 class _PipeChecker:
@@ -203,10 +222,17 @@ def _plan_horizon(kin_dyn, q_start, q_goal, center, radius, orientation,
         if abs(q_start[idx] - q_goal[idx]) < 1e-9:
             q[idx].setBounds(q_start[idx], q_start[idx])
 
+    initial_guess = _initial_guess(q_start, q_goal, nodes, initial_guess_mode)
+    if q_start.size >= 7:
+        base_path = np.repeat(q_start[:7, None], nodes + 1, axis=1)
+        initial_guess[:7] = base_path
+        for node in range(nodes + 1):
+            q[:7].setBounds(base_path[:, node], base_path[:, node],
+                            nodes=node)
+
     q.setBounds(q_start, q_start, nodes=0)
     q.setBounds(q_goal, q_goal, nodes=nodes)
-    q.setInitialGuess(_initial_guess(
-        q_start, q_goal, nodes, initial_guess_mode))
+    q.setInitialGuess(initial_guess)
     has_arm = q_start.size > 7
     if has_arm and motion_weight > 0.0:
         prb.createResidual(
@@ -263,7 +289,7 @@ def _plan_horizon(kin_dyn, q_start, q_goal, center, radius, orientation,
     if not solver.solve():
         raise RuntimeError("Horizon failed to find a homing trajectory")
 
-    return solver.getSolutionDict()["q_homing"]
+    return _normalize_base_quaternions(solver.getSolutionDict()["q_homing"])
 
 
 def plan_homing_trajectory(urdf, srdf, kin_dyn, q_start, q_goal, pipe_center,
@@ -281,6 +307,10 @@ def plan_homing_trajectory(urdf, srdf, kin_dyn, q_start, q_goal, pipe_center,
                            candidate_callback=None):
     q_start = np.asarray(q_start, dtype=float).reshape(-1)
     q_goal = np.asarray(q_goal, dtype=float).reshape(-1)
+    if q_start.size >= 7:
+        q_start = _normalize_base_quaternions(q_start[:, None])[:, 0]
+        q_goal = _normalize_base_quaternions(q_goal[:, None])[:, 0]
+        q_goal[:7] = q_start[:7]
     pipe_center = np.asarray(pipe_center, dtype=float).reshape(3)
     pipe_orientation = np.asarray(pipe_orientation, dtype=float).reshape(4)
     steps = max(1, int(round(duration / dt)))

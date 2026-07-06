@@ -94,9 +94,55 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default=GAP_POSE_TIMEOUT_S,
         help="Maximum accepted age for /gap/pose_robot in seconds.",
     )
+    parser.add_argument(
+        "--gap-filter-tau",
+        "--gap-filter-time-constant",
+        type=float,
+        default=0.0,
+        help=(
+            "Low-pass filter time constant for /gap/pose_robot [s]. "
+            "Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--gap-filter-history-size",
+        type=int,
+        default=1,
+        help=(
+            "Number of accepted /gap/pose_robot samples used for the median "
+            "history estimate. Use 1 to disable history."
+        ),
+    )
+    parser.add_argument(
+        "--gap-filter-max-position-jump",
+        type=float,
+        default=0.0,
+        help=(
+            "Reject camera pose samples farther than this from the current "
+            "filtered gap position [m]. Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--gap-filter-max-angle-jump",
+        type=float,
+        default=0.0,
+        help=(
+            "Reject camera pose samples whose orientation differs by more "
+            "than this from the current filtered gap orientation [deg]. "
+            "Use 0 to disable."
+        ),
+    )
     args = parser.parse_args(remove_ros_args(args=argv)[1:])
     if args.gap_pose_timeout <= 0.0:
         parser.error("--gap-pose-timeout must be positive")
+    if args.gap_filter_tau < 0.0:
+        parser.error("--gap-filter-tau must be >= 0")
+    if args.gap_filter_history_size < 1:
+        parser.error("--gap-filter-history-size must be >= 1")
+    if args.gap_filter_max_position_jump < 0.0:
+        parser.error("--gap-filter-max-position-jump must be >= 0")
+    if args.gap_filter_max_angle_jump < 0.0:
+        parser.error("--gap-filter-max-angle-jump must be >= 0")
     return args
 
 
@@ -143,7 +189,13 @@ print("[controller] Trajectory interpolator ready.")
 
 # ── Read URDF/SRDF from robot_description_publisher ───────────────────────────
 print("[controller] Waiting for robot_description ROS parameters …")
-controller_ros = ControllerRosInterface(GAIN_PARAM_DEFAULTS)
+controller_ros = ControllerRosInterface(
+    GAIN_PARAM_DEFAULTS,
+    gap_pose_filter_tau_s=args.gap_filter_tau,
+    gap_pose_filter_history_size=args.gap_filter_history_size,
+    gap_pose_filter_max_position_jump_m=args.gap_filter_max_position_jump,
+    gap_pose_filter_max_angle_jump_deg=args.gap_filter_max_angle_jump,
+)
 
 urdf, srdf = controller_ros.robot_description()
 print("[controller] URDF and SRDF received.")

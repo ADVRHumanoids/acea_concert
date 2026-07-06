@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import argparse
+import select
 import subprocess
 from pathlib import Path
+from time import monotonic, sleep
 
 import casadi_kin_dyn.py3casadi_kin_dyn as casadi_kin_dyn
 import numpy as np
@@ -87,6 +89,119 @@ def _homing_start_q(kin_dyn, q_goal):
     return q_start
 
 
+def _gazebo_robot_pose(timeout_s):
+    from gap_pose_publisher import (
+        GZ_POSE_TOPIC,
+        ROBOT_BASE_LINK,
+        ROBOT_MODEL,
+        _parse_pose_v,
+    )
+
+    deadline = monotonic() + timeout_s
+    proc = subprocess.Popen(
+        ["gz", "topic", "-e", "-t", GZ_POSE_TOPIC],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    buffer = []
+    try:
+        while monotonic() < deadline:
+            remaining = deadline - monotonic()
+            ready, _, _ = select.select([proc.stdout], [], [], remaining)
+            if not ready:
+                break
+
+            line = proc.stdout.readline()
+            if not line:
+                break
+
+            if line.startswith("header {") and len(buffer) > 1:
+                poses = _parse_pose_v("".join(buffer))
+                for name in (ROBOT_BASE_LINK, ROBOT_MODEL):
+                    if name in poses:
+                        xyz, quat = poses[name]
+                        return np.concatenate([xyz, quat])
+                buffer = [line]
+            else:
+                buffer.append(line)
+
+        poses = _parse_pose_v("".join(buffer))
+        for name in (ROBOT_BASE_LINK, ROBOT_MODEL):
+            if name in poses:
+                xyz, quat = poses[name]
+                return np.concatenate([xyz, quat])
+    finally:
+        proc.terminate()
+
+    raise RuntimeError(
+        "Could not read robot pose from Gazebo "
+        f"({ROBOT_BASE_LINK} or {ROBOT_MODEL}) within {timeout_s:.1f}s"
+    )
+
+
+def _xbot_joint_positions(timeout_s):
+    import rclpy
+    from rclpy.qos import qos_profile_sensor_data
+    from xbot_msgs.msg import JointState as XbotJointState
+
+    if not rclpy.ok():
+        rclpy.init(args=None)
+
+    node = rclpy.create_node("homing_xbot_state_reader")
+    joint_positions = {}
+
+    def on_joint_state(msg):
+        joint_positions.update(zip(
+            [str(name).strip() for name in msg.name],
+            [float(value) for value in msg.link_position],
+        ))
+
+    sub = node.create_subscription(
+        XbotJointState,
+        "/xbotcore/joint_states",
+        on_joint_state,
+        qos_profile_sensor_data,
+    )
+
+    deadline = monotonic() + timeout_s
+    try:
+        while monotonic() < deadline and not joint_positions:
+            rclpy.spin_once(
+                node,
+                timeout_sec=max(0.0, min(0.1, deadline - monotonic())),
+            )
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+    if not joint_positions:
+        raise RuntimeError(
+            "Could not read /xbotcore/joint_states within "
+            f"{timeout_s:.1f}s"
+        )
+    return joint_positions
+
+
+def _apply_xbot_joint_positions(q, kin_dyn, joint_positions):
+    q = np.asarray(q, dtype=float).reshape(-1).copy()
+    used = []
+    for name in kin_dyn.joint_names():
+        name = str(name).strip()
+        if name not in joint_positions or kin_dyn.joint_nq(name) != 1:
+            continue
+
+        idx = kin_dyn.joint_iq(name)
+        if idx < q.size:
+            q[idx] = joint_positions[name]
+            used.append(name)
+
+    if not used:
+        raise RuntimeError("No model joints matched /xbotcore/joint_states")
+    return q, used
+
+
 def _mat_payload(data):
     return {
         key: value
@@ -98,8 +213,6 @@ def _mat_payload(data):
 def _show_homing_rviz(urdf, kin_dyn, homing, pipe_center, pipe_radius,
                       pipe_length, pipe_gap, pipe_orientation, clearance,
                       inflation_radius):
-    from horizon.ros import replay_trajectory
-
     pipe_markers = []
     pipe_marker = PATH_TO_ACEA_CONCERT / "src" / "viz" / "rviz_pipe_marker.py"
     sphere_marker = (
@@ -155,31 +268,104 @@ def _show_homing_rviz(urdf, kin_dyn, homing, pipe_center, pipe_radius,
             "0.35",
         ]))
 
+    rsp_urdf_path = Path("/tmp/concert_homing_rviz.urdf")
+    rsp_urdf_path.write_text(urdf)
     rsp = subprocess.Popen([
         "ros2",
         "run",
         "robot_state_publisher",
         "robot_state_publisher",
+        str(rsp_urdf_path),
         "--ros-args",
+        "-r",
+        "/joint_states:=/homing_joint_states",
         "-p",
-        f"robot_description:={urdf}",
+        "use_sim_time:=false",
     ])
+    sleep(0.5)
+    if rsp.poll() is not None:
+        raise RuntimeError("robot_state_publisher exited before RViz replay")
     try:
         q_cycle = np.concatenate([homing.q, np.flip(homing.q, axis=1)], axis=1)
-        repl = replay_trajectory.replay_trajectory(
-            homing.dt,
-            kin_dyn.joint_names(),
-            q_cycle,
-            kindyn=kin_dyn,
-            future_trajectory_markers={"ee_F": "world"},
-        )
-        repl.replay()
+        _replay_homing_rviz(kin_dyn, q_cycle, homing.dt)
     except KeyboardInterrupt:
         print("[plan_homing_from_mat] RViz replay stopped; continuing.")
     finally:
         rsp.terminate()
         for proc in pipe_markers:
             proc.terminate()
+
+
+def _replay_homing_rviz(kin_dyn, q_cycle, dt):
+    import rclpy
+    from geometry_msgs.msg import TransformStamped
+    from sensor_msgs.msg import JointState
+    from tf2_ros import TransformBroadcaster
+
+    if not rclpy.ok():
+        rclpy.init(args=None)
+
+    node = rclpy.create_node("homing_rviz_replayer")
+    joint_pub = node.create_publisher(JointState, "/homing_joint_states", 10)
+    tf_pub = TransformBroadcaster(node)
+
+    joints_1dof = [
+        name for name in kin_dyn.joint_names()
+        if kin_dyn.joint_nq(name) == 1
+    ]
+    iq_1dof = [kin_dyn.joint_iq(name) for name in joints_1dof]
+    floating_joints = [
+        (
+            kin_dyn.joint_iq(name),
+            kin_dyn.parentLink(name).lstrip("/"),
+            kin_dyn.childLink(name).lstrip("/"),
+        )
+        for name in kin_dyn.joint_names()
+        if kin_dyn.joint_nq(name) == 7
+    ]
+
+    try:
+        while rclpy.ok():
+            for qk in q_cycle.T:
+                t0 = monotonic()
+                qk = np.asarray(qk, dtype=float).reshape(-1)
+                stamp = node.get_clock().now().to_msg()
+
+                joint_msg = JointState()
+                joint_msg.header.stamp = stamp
+                joint_msg.name = joints_1dof
+                joint_msg.position = qk[iq_1dof].tolist()
+                joint_pub.publish(joint_msg)
+
+                for iq, parent, child in floating_joints:
+                    quat = qk[iq + 3:iq + 7].copy()
+                    norm = np.linalg.norm(quat)
+                    if norm > 1e-9:
+                        quat /= norm
+                    else:
+                        quat = np.array([0.0, 0.0, 0.0, 1.0])
+
+                    msg = TransformStamped()
+                    msg.header.stamp = stamp
+                    msg.header.frame_id = parent or "world"
+                    msg.child_frame_id = child
+                    msg.transform.translation.x = float(qk[iq])
+                    msg.transform.translation.y = float(qk[iq + 1])
+                    msg.transform.translation.z = float(qk[iq + 2])
+                    msg.transform.rotation.x = float(quat[0])
+                    msg.transform.rotation.y = float(quat[1])
+                    msg.transform.rotation.z = float(quat[2])
+                    msg.transform.rotation.w = float(quat[3])
+                    tf_pub.sendTransform(msg)
+
+                rclpy.spin_once(node, timeout_sec=0.0)
+                sleep_time = dt - (monotonic() - t0)
+                if sleep_time > 0.0:
+                    sleep(sleep_time)
+    finally:
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 def _ask_show_rejected_candidate(enabled, urdf, kin_dyn, candidate, node,
@@ -227,6 +413,15 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mat-file", type=Path, default=DEFAULT_MAT_FILE)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--initial-pose-from-gazebo",
+        action="store_true",
+        help=(
+            "Use current Gazebo robot base pose and /xbotcore/joint_states "
+            "for q_homing_start."
+        ),
+    )
+    parser.add_argument("--gazebo-pose-timeout", type=float, default=5.0)
     parser.add_argument("--duration", type=float, default=5.0)
     parser.add_argument("--dt", type=float, default=0.02)
     parser.add_argument("--planner-nodes", type=int, default=30)
@@ -312,9 +507,27 @@ def main():
     urdf, srdf = _make_robot_description()
     kin_dyn = casadi_kin_dyn.CasadiKinDyn(urdf)
     q_start = _homing_start_q(kin_dyn, q_goal)
+    if args.initial_pose_from_gazebo:
+        q_start[:7] = _gazebo_robot_pose(args.gazebo_pose_timeout)
+        q_start, xbot_joints = _apply_xbot_joint_positions(
+            q_start,
+            kin_dyn,
+            _xbot_joint_positions(args.gazebo_pose_timeout),
+        )
+        print(
+            "[plan_homing_from_mat] Using Gazebo base pose for q_homing_start: "
+            f"{q_start[:7].tolist()}"
+        )
+        print(
+            "[plan_homing_from_mat] Using XBot joint state for "
+            f"{len(xbot_joints)} q_homing_start joints."
+        )
     if q_start.size != q_goal.size:
         raise ValueError(
             f"q0 has {q_start.size} DoFs, MAT q has {q_goal.size}")
+    q_goal_homing = q_goal.copy()
+    if q_goal_homing.size >= 7:
+        q_goal_homing[:7] = q_start[:7]
 
     pipe_radius = _scalar(data, "radius_pipe")
     pipe_length = _scalar(data, "length_pipe")
@@ -352,7 +565,7 @@ def main():
                 srdf=srdf,
                 kin_dyn=kin_dyn,
                 q_start=q_start,
-                q_goal=q_goal,
+                q_goal=q_goal_homing,
                 pipe_center=pipe_center,
                 pipe_radius=pipe_radius,
                 pipe_length=pipe_length,
@@ -410,7 +623,7 @@ def main():
     payload.update({
         "q_homing": homing.q,
         "q_homing_start": q_start.reshape(-1, 1),
-        "q_homing_goal": q_goal.reshape(-1, 1),
+        "q_homing_goal": q_goal_homing.reshape(-1, 1),
         "q_homing_dt": homing.dt,
         "q_homing_duration": args.duration,
         "q_homing_method": homing.method,

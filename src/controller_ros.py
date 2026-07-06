@@ -9,6 +9,7 @@ from std_msgs.msg import Header
 from scipy.spatial.transform import Rotation as R
 
 from utils.diagnostic import DiagnosticPlotter
+from utils.gap_pose_filter import GapPoseLowPass
 from rcl_interfaces.srv import GetParameters
 
 
@@ -46,6 +47,10 @@ class ControllerRosInterface:
     """
 
     def __init__(self, gain_defaults: dict[str, float],
+                 gap_pose_filter_tau_s: float = 0.0,
+                 gap_pose_filter_history_size: int = 1,
+                 gap_pose_filter_max_position_jump_m: float = 0.0,
+                 gap_pose_filter_max_angle_jump_deg: float = 0.0,
                  node_name: str = 'ee_gap_controller'):
         if not rclpy.ok():
             rclpy.init()
@@ -54,6 +59,12 @@ class ControllerRosInterface:
         self._gain_defaults = {
             name: float(value) for name, value in gain_defaults.items()
         }
+        self._gap_pose_filter = GapPoseLowPass(
+            tau_s=gap_pose_filter_tau_s,
+            history_size=gap_pose_filter_history_size,
+            max_position_jump_m=gap_pose_filter_max_position_jump_m,
+            max_angle_jump_deg=gap_pose_filter_max_angle_jump_deg,
+        )
 
         self._pub_des = self.node.create_publisher(
             PoseStamped, '/ee/desired', 10)
@@ -79,6 +90,13 @@ class ControllerRosInterface:
 
         self.node.create_subscription(
             PoseStamped, '/gap/pose_robot', self._on_gap_pose_robot, 10)
+        if self._gap_pose_filter.enabled:
+            self.node.get_logger().info(
+                "Filtering /gap/pose_robot with "
+                f"tau={gap_pose_filter_tau_s:.3f}s, "
+                f"history={gap_pose_filter_history_size}, "
+                f"max_pos_jump={gap_pose_filter_max_position_jump_m:.4f}m, "
+                f"max_angle_jump={gap_pose_filter_max_angle_jump_deg:.2f}deg")
 
         self._ros_thread = threading.Thread(
             target=rclpy.spin, args=(self.node,), daemon=True)
@@ -163,16 +181,21 @@ class ControllerRosInterface:
         if norm <= 1e-9:
             return
 
-        self._gap_origin_base = np.array([
+        gap_origin_base = np.array([
             msg.pose.position.x,
             msg.pose.position.y,
             msg.pose.position.z,
         ], dtype=float)
         base_R_gap = R.from_quat(q / norm).as_matrix()
+        now_s = monotonic()
+        gap_origin_base, base_R_gap = self._gap_pose_filter.update(
+            gap_origin_base, base_R_gap, now_s)
+
+        self._gap_origin_base = gap_origin_base
         self._gap_x_axis_base = self._unit_axis(base_R_gap[:, 0])
         self._gap_y_axis_base = self._unit_axis(base_R_gap[:, 1])
         self._gap_z_axis_base = self._unit_axis(base_R_gap[:, 2])
-        self._last_gap_pose_time = monotonic()
+        self._last_gap_pose_time = now_s
 
     def _unit_axis(self, axis: np.ndarray) -> np.ndarray | None:
         norm = np.linalg.norm(axis)

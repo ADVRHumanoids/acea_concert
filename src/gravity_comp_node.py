@@ -4,9 +4,27 @@ A minimal ROS 2 node that sends only gravity compensation torques to the robot.
 
 import rclpy
 from rclpy.node import Node
+from xbot_msgs.msg import JointCommand
 from xbot2_interface import pyxbot2_interface as xbi
 
 from controller_ros import fetch_robot_description
+
+
+ARM_JOINTS = (
+    'J1_E', 'J2_E',
+    'J1_F', 'J2_F', 'J3_F', 'J4_F', 'J5_F', 'J6_F',
+)
+
+
+def _stamp_from_xbot_time(xbot_time):
+    epoch = xbot_time.replace(
+        year=1970, month=1, day=1, hour=0, minute=0, second=0,
+        microsecond=0)
+    delta = xbot_time - epoch
+    sec = delta.days * 24 * 60 * 60 + delta.seconds
+    nanosec = delta.microseconds * 1000
+    return sec, nanosec
+
 
 class GravityCompNode(Node):
     def __init__(self):
@@ -29,9 +47,7 @@ class GravityCompNode(Node):
         # ── Create RobotInterface2 and sense initial state ────────────────────────────
         print("[controller] Connecting to RobotInterface2 …")
         self.robot = xbi.RobotInterface2(cfg)
-        self.robot.setControlMode(xbi.ControlMode.EFFORT)
         self.robot.sense()
-        
 
         robot_q_map = self.robot.qToMap(self.robot.getJointPosition())
 
@@ -42,8 +58,20 @@ class GravityCompNode(Node):
         self.model.setJointPosition(robot_q_map)
         self.model.update()
 
+        gcomp_map = self.model.vToMap(self.model.computeGravityCompensation())
+        self.gravity_comp_joints = [
+            name for name in ARM_JOINTS
+            if name in gcomp_map
+        ]
+        if not self.gravity_comp_joints:
+            raise RuntimeError("No arm joints are available for gravity comp.")
+
+        self.command_pub = self.create_publisher(
+            JointCommand, '/xbotcore/command', 1)
         self.timer = self.create_timer(0.01, self.send_gravity_comp)
-        self.get_logger().info('Gravity compensation node started.')
+        self.get_logger().info(
+            "Gravity compensation node started for joints: "
+            f"{self.gravity_comp_joints}")
 
             
     def send_gravity_comp(self):
@@ -54,9 +82,20 @@ class GravityCompNode(Node):
         # Update model
         self.model.update()
         # Compute and send gravity compensation torques
-        self.robot.setEffortReference(self.model.computeGravityCompensation())
-        # Send command to robot
-        self.robot.move() 
+        gcomp_map = self.model.vToMap(self.model.computeGravityCompensation())
+        msg = JointCommand()
+        msg.header.stamp.sec, msg.header.stamp.nanosec = _stamp_from_xbot_time(
+            self.robot.getTimestamp())
+        msg.name = list(self.gravity_comp_joints)
+        msg.effort = [
+            float(gcomp_map[name])
+            for name in self.gravity_comp_joints
+        ]
+        msg.ctrl_mode = [
+            int(xbi.ControlMode.EFFORT)
+            for _ in self.gravity_comp_joints
+        ]
+        self.command_pub.publish(msg)
 
 
 def main(args=None):

@@ -11,7 +11,7 @@ usage() {
 Usage: kill_concert_stack [--dry-run] [--force] [--timeout SECONDS]
 
 Stops common CONCERT/ROS 2 simulation processes:
-  ROS 2 launch/daemon tools, Gazebo/GZ, XBot2, RViz, ros_gz bridges,
+  ROS 2 launch/daemon/tools/nodes, Gazebo/GZ, XBot2, RViz, ros_gz bridges,
   gap_pose_publisher, gravity_comp_node, controller scripts, and weld helpers.
 
 Options:
@@ -60,9 +60,20 @@ while [[ -n "${pid}" && "${pid}" != "0" ]]; do
 done
 
 PATTERNS=(
+    '/opt/ros/[^[:space:]]+'
+    '/home/user/concert_ws/install/[^[:space:]]+'
     '(^|[ /])ros2([[:space:]]|$)'
+    '(^|[ /])_ros2_daemon([[:space:]]|$)'
     '(^|[ /])ros2_daemon([[:space:]]|$)'
     '--ros-args'
+    '(^|[ /])component_container(_mt|_isolated)?([[:space:]]|$)'
+    '(^|[ /])ros2_control_node([[:space:]]|$)'
+    '(^|[ /])controller_manager([[:space:]]|$)'
+    '(^|[ /])spawner([[:space:]]|$)'
+    '(^|[ /])joint_state_publisher(_gui)?([[:space:]]|$)'
+    '(^|[ /])static_transform_publisher([[:space:]]|$)'
+    '(^|[ /])tf2_(echo|monitor|static_transform_publisher)([[:space:]]|$)'
+    '(^|[ /])rosbag2(_transport)?([[:space:]]|$)'
     '(^|[ /])gazebo([[:space:]]|$)'
     '(^|[ /])gzserver([[:space:]]|$)'
     '(^|[ /])gzclient([[:space:]]|$)'
@@ -88,6 +99,7 @@ PATTERNS=(
     'drive_base_to_weld_pose[.]py'
     'home_to_weld_start[.]py'
     'weld_opt[.]py'
+    'plan_homing_from_mat[.]py'
     'run_weld_opt_batch[.]py'
     'replayer[.]py'
     'rviz_(pipe|rectangle|line)_marker[.]py'
@@ -117,6 +129,14 @@ for pattern in "${PATTERNS[@]}"; do
     add_matches "${pattern}"
 done
 
+if command -v ros2 >/dev/null 2>&1; then
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+        echo "Would stop ROS 2 daemon."
+    else
+        ros2 daemon stop >/dev/null 2>&1 || true
+    fi
+fi
+
 if [[ ${#TARGETS[@]} -eq 0 ]]; then
     echo "No matching CONCERT/ROS 2/Gazebo/XBot processes found."
     exit 0
@@ -130,10 +150,6 @@ done | sort -n
 if [[ "${DRY_RUN}" -eq 1 ]]; then
     echo "Dry run only; no processes were killed."
     exit 0
-fi
-
-if command -v ros2 >/dev/null 2>&1; then
-    ros2 daemon stop >/dev/null 2>&1 || true
 fi
 
 if [[ "${FORCE}" -eq 1 ]]; then

@@ -16,14 +16,19 @@ Usage:
   python3 src/gap_pose_publisher.py
 """
 
+import argparse
 import re
 import subprocess
+import sys
 import threading
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.utilities import remove_ros_args
 from geometry_msgs.msg import PoseStamped
 from scipy.spatial.transform import Rotation as R
+
+from gap_pose_faults import GapPoseFaultConfig, GapPoseFaultInjector
 
 # ── Gazebo model names (from gz topic -e /world/default/pose/info) ─────────
 ROBOT_MODEL     = 'ModularBot'        # capital M and B — verified from Gazebo
@@ -184,11 +189,12 @@ def _parse_pose_v(text: str) -> dict[str, tuple[np.ndarray, np.ndarray]]:
 
 class GapPosePublisher(Node):
 
-    def __init__(self):
+    def __init__(self, fault_config: GapPoseFaultConfig):
         super().__init__('gap_pose_publisher')
 
         self._pub_gap_robot = self.create_publisher(
             PoseStamped, '/gap/pose_robot', 10)
+        self._faults = GapPoseFaultInjector(fault_config)
 
         # Latest parsed poses {name: (xyz, quat)}
         self._poses: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -206,6 +212,9 @@ class GapPosePublisher(Node):
             f"Waiting for: [{ROBOT_BASE_LINK} or {ROBOT_MODEL}], "
             f"[{GAP_MODEL_LEFT}], [{GAP_MODEL_RIGHT}]"
         )
+        if self._faults.enabled:
+            self.get_logger().warn(
+                "Publishing /gap/pose_robot with simulated noise/dropouts.")
 
     # ──────────────────────────────────────────────────────────────────────────
     def _gz_reader(self):
@@ -277,6 +286,14 @@ class GapPosePublisher(Node):
         base_R_gap = np.column_stack([gap_x_robot, gap_y_robot, gap_z_robot])
         gap_quat_robot = R.from_matrix(base_R_gap).as_quat()
 
+        faulted = self._faults.apply(gap_in_robot, gap_quat_robot)
+        if faulted is None:
+            self.get_logger().warn(
+                "Simulated /gap/pose_robot disconnection/dropout.",
+                throttle_duration_sec=1.0)
+            return
+        gap_in_robot, gap_quat_robot = faulted
+
         self._pub_gap_robot.publish(
             _pose_stamped(BASE_FRAME,  gap_in_robot, gap_quat_robot, stamp))
 
@@ -292,9 +309,55 @@ class GapPosePublisher(Node):
         )
 
 
-def main():
-    rclpy.init()
-    node = GapPosePublisher()
+def _parse_args(argv):
+    parser = argparse.ArgumentParser(
+        description="Publish the weld gap pose in base_link.")
+    parser.add_argument(
+        "--gap-pos-noise-std",
+        type=float,
+        default=0.0,
+        help="Gaussian position noise stddev [m]. Default: 0.")
+    parser.add_argument(
+        "--gap-rot-noise-std",
+        type=float,
+        default=0.0,
+        help="Gaussian rotation-vector noise stddev [rad]. Default: 0.")
+    parser.add_argument(
+        "--gap-drop-probability",
+        type=float,
+        default=0.0,
+        help="Probability of dropping each /gap/pose_robot sample. Default: 0.")
+    parser.add_argument(
+        "--gap-disconnect-every",
+        type=float,
+        default=0.0,
+        help="Start a simulated outage every N seconds. Default: disabled.")
+    parser.add_argument(
+        "--gap-disconnect-duration",
+        type=float,
+        default=0.0,
+        help="Length of each simulated outage [s]. Default: 0.")
+    parser.add_argument(
+        "--gap-fault-seed",
+        type=int,
+        default=None,
+        help="Random seed for repeatable noise/dropouts.")
+    args = parser.parse_args(remove_ros_args(args=argv)[1:])
+    return GapPoseFaultConfig(
+        position_std=args.gap_pos_noise_std,
+        orientation_std=args.gap_rot_noise_std,
+        dropout_probability=args.gap_drop_probability,
+        disconnect_every=args.gap_disconnect_every,
+        disconnect_duration=args.gap_disconnect_duration,
+        seed=args.gap_fault_seed,
+    )
+
+
+def main(argv=None):
+    argv = sys.argv if argv is None else argv
+    fault_config = _parse_args(argv)
+    rclpy.init(args=argv)
+    node = GapPosePublisher(fault_config)
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):

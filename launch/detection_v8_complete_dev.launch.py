@@ -14,11 +14,18 @@ the existing simulation stack, e.g. arm_camera_detection.launch.py or an
 equivalent camera_F bridge.
 """
 
+import os
+from pathlib import Path
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from scipy.io import loadmat
+
+
+DEFAULT_SOURCE_MAT_FILE = Path("/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat")
 
 
 def _truthy(text: str) -> bool:
@@ -32,6 +39,59 @@ def _resolve_topic(value: str, sim_value: str, real_value: str, use_sim_time: bo
     if preset == "sim" or (preset == "auto" and use_sim_time):
         return sim_value
     return real_value
+
+
+def _mat_scalar(mat_file: str, name: str) -> float:
+    matdata = loadmat(mat_file)
+    if name not in matdata:
+        raise RuntimeError(f"MAT file '{mat_file}' has no '{name}' field")
+    return float(matdata[name].reshape(-1)[0])
+
+
+def _auto_mat_file_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    env_mat_file = os.environ.get("ACEA_CONCERT_MAT_FILE")
+    if env_mat_file:
+        candidates.append(Path(env_mat_file))
+
+    # First prefer the source workspace path used by weld_sim.launch.py, because
+    # src/weld_opt.py regenerates this file without requiring a colcon rebuild.
+    candidates.append(DEFAULT_SOURCE_MAT_FILE)
+
+    # If this launch is run from source, this resolves to the live source tree.
+    # If run from an installed package, it becomes the installed fallback copy.
+    candidates.append(Path(__file__).resolve().parents[1] / "mat_files" / "weld_concert.mat")
+    return candidates
+
+
+def _resolve_mat_file(context) -> str:
+    value = LaunchConfiguration("mat_file").perform(context).strip()
+    if value and value.lower() != "auto":
+        return value
+
+    for candidate in _auto_mat_file_candidates():
+        if candidate.exists():
+            return str(candidate)
+    searched = ", ".join(str(candidate) for candidate in _auto_mat_file_candidates())
+    raise RuntimeError(
+        "mat_file:=auto could not find weld_concert.mat. Generate it first with "
+        "`ros2 run acea_concert weld_opt.py` or `python3 src/weld_opt.py`, then "
+        "launch detection again. Searched: "
+        f"{searched}"
+    )
+
+
+def _resolve_pipe_radius(context) -> float | None:
+    value = LaunchConfiguration("pipe_radius_m").perform(context).strip()
+    if not value or value.lower() in ("none", "off", "false", "yaml"):
+        return None
+    if value.lower() != "auto":
+        return float(value)
+
+    mat_file = _resolve_mat_file(context)
+    radius = _mat_scalar(mat_file, "radius_pipe")
+    print(f"[detection_v8_complete_dev] pipe_radius_m={radius:.6g} from {mat_file}")
+    return radius
 
 
 def _launch_nodes(context, *args, **kwargs):
@@ -66,6 +126,9 @@ def _launch_nodes(context, *args, **kwargs):
     if qos_arg.lower() == "auto":
         qos_arg = "reliable" if use_sim_time or camera_preset.lower() == "sim" else "best_effort"
 
+    pipe_radius = _resolve_pipe_radius(context)
+    pipe_radius_params = [] if pipe_radius is None else [{"pipe_radius_m": pipe_radius}]
+
     detector = Node(
         package="acea_concert",
         executable="acea_pipe_junction_node_v8_complete_dev.py",
@@ -84,7 +147,7 @@ def _launch_nodes(context, *args, **kwargs):
             {"stale_subscription_reset_s": LaunchConfiguration("stale_subscription_reset_s")},
             {"camera_qos_reliability": qos_arg},
             {"use_sim_time": use_sim_time},
-        ],
+        ] + pipe_radius_params,
     )
     return [
         detector,
@@ -119,6 +182,16 @@ def generate_launch_description() -> LaunchDescription:
             "gap_pose_config",
             default_value=PathJoinSubstitution([pkg, "config", "gap_pose_robot.yaml"]),
             description="Parameter YAML for the gap_pose_robot publisher.",
+        ),
+        DeclareLaunchArgument(
+            "mat_file",
+            default_value="auto",
+            description="MAT file used to derive geometry parameters. auto prefers the regenerated source mat_files/weld_concert.mat.",
+        ),
+        DeclareLaunchArgument(
+            "pipe_radius_m",
+            default_value="auto",
+            description="Detector pipe radius [m]. auto reads radius_pipe from mat_file; yaml leaves detector_config value unchanged.",
         ),
         DeclareLaunchArgument(
             "junction_acceptance_mode",

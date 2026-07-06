@@ -62,7 +62,9 @@ weld_upside_down = False
 ```
 
 Run this optimization before launching the full welding simulation/controller so
-`mat_files/weld_concert.mat` matches the expected sector.
+`mat_files/weld_concert.mat` matches the expected sector. The simulation and
+the v8-complete detector launch both read this file at launch time for the pipe
+geometry, including `radius_pipe`.
 
 `src/weld_opt.py` solves the Horizon optimization problem and saves:
 
@@ -70,7 +72,9 @@ Run this optimization before launching the full welding simulation/controller so
 mat_files/weld_concert.mat
 ```
 
-The MAT file contains the optimized joint trajectory, the pipe/gap geometry, and the weld trajectory expressed in the gap frame. The online controller expects this file to exist before starting the simulation.
+The MAT file contains the optimized joint trajectory, the pipe/gap geometry, and
+the weld trajectory expressed in the gap frame. The online controller expects
+this file to exist before starting the simulation.
 
 Optionally plan a collision-aware homing trajectory and save it back into the MAT file as `q_homing`:
 
@@ -242,15 +246,72 @@ The perception replacement publishes the same controller contract:
 ```
 
 Launch it instead of `src/gap_pose_publisher.py` when RGB-D camera data and the
-camera-to-`base_link` TF are available. For the fixed/front D435i camera:
+camera-to-`base_link` TF are available. For the current arm-camera simulation
+workflow, use the v8-complete detector launch:
 
 ```bash
-ros2 launch acea_concert detection.launch.py
+ros2 launch acea_concert detection_v8_complete_dev.launch.py use_sim_time:=true
 ```
 
-For the arm-mounted camera used by the controller tests, use
-`arm_camera_detection.launch.py` instead; it bridges `/camera_F` and points the
-detector at that wrist camera.
+With the default `mat_file:=auto` and `pipe_radius_m:=auto`, this launch reads
+`radius_pipe` from the regenerated source MAT file:
+
+```text
+/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat
+```
+
+If the file is missing, the launch stops and tells you to generate it first with
+`src/weld_opt.py`. When it succeeds, the launch log prints the effective radius
+and the MAT file path, for example:
+
+```text
+[detection_v8_complete_dev] pipe_radius_m=0.15 from /home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat
+```
+
+Typical simulation sequence:
+
+```bash
+cd /home/user/concert_ws/src/acea_concert
+python3 src/weld_opt.py
+
+cd /home/user/concert_ws
+colcon build --packages-select acea_concert
+source install/setup.bash
+
+ros2 launch acea_concert weld_sim.launch.py
+```
+
+Then, in another terminal:
+
+```bash
+cd /home/user/concert_ws
+source install/setup.bash
+ros2 launch acea_concert detection_v8_complete_dev.launch.py use_sim_time:=true
+```
+
+To bypass the MAT-derived radius and pass a radius manually:
+
+```bash
+ros2 launch acea_concert detection_v8_complete_dev.launch.py \
+  use_sim_time:=true \
+  pipe_radius_m:=0.15
+```
+
+To read `radius_pipe` from a different MAT file:
+
+```bash
+ros2 launch acea_concert detection_v8_complete_dev.launch.py \
+  use_sim_time:=true \
+  mat_file:=/absolute/path/to/weld_concert.mat
+```
+
+To ignore the MAT file and keep the value from the YAML config:
+
+```bash
+ros2 launch acea_concert detection_v8_complete_dev.launch.py \
+  use_sim_time:=true \
+  pipe_radius_m:=yaml
+```
 
 Do not run the ground-truth publisher and the perception publisher at the same
 time, because they publish the same `/gap/pose_robot` topic.
@@ -259,7 +320,7 @@ The perception pipeline is:
 
 ```text
 D435i RGB/depth/camera_info
-  -> acea_pipe_junction_node.py
+  -> acea_pipe_junction_node_v8_complete_dev.py
   -> /acea/pipe_junction/detection
   -> /acea/weld_seam/gap_plane       camera frame
   -> gap_pose_robot_node.py
@@ -273,40 +334,45 @@ projected-GT method, and repeatable validation commands are documented in:
 PIPE_JUNCTION_VALIDATION.md
 ```
 
-Default camera topics match `weld_sim.launch.py`:
+When `use_sim_time:=true`, `detection_v8_complete_dev.launch.py` defaults to
+the simulation camera topics:
 
 ```text
-/D435i_camera_front/color/image_raw
-/D435i_camera_front/depth_image
-/D435i_camera_front/camera_info
+/camera_F/color/image_raw
+/camera_F/depth_image
+/camera_F/camera_info
 ```
 
 To launch the detector with explicit topics:
 
 ```bash
-ros2 launch acea_concert detection.launch.py \
-  rgb_topic:=/D435i_camera_front/color/image_raw \
-  depth_topic:=/D435i_camera_front/depth_image \
-  camera_info_topic:=/D435i_camera_front/camera_info
+ros2 launch acea_concert detection_v8_complete_dev.launch.py \
+  use_sim_time:=true \
+  rgb_topic:=/camera_F/color/image_raw \
+  depth_topic:=/camera_F/depth_image \
+  camera_info_topic:=/camera_F/camera_info
 ```
 
-The detector uses the deterministic RGB Variant A frontend by default:
+When `use_sim_time:=false`, the same launch defaults to the RealSense-style
+topics:
+
+```text
+/camera/camera/color/image_raw
+/camera/camera/aligned_depth_to_color/image_raw
+/camera/camera/color/camera_info
+```
+
+The older baseline launch is still available:
 
 ```bash
 ros2 launch acea_concert detection.launch.py
 ```
 
-Important: `config/detector.yaml` currently sets
-`variant_a_min_vertical_run_px: 8`. This is intentionally permissive for the
-short junction filler in the Gazebo smoke test. Before treating it as a robust
-real/deployment setting, rerun no-gap and hard-negative checks because short
-dark marks could otherwise become false positives.
-
 For a real wrist camera, remap these three topics to the camera driver topics.
 For example:
 
 ```bash
-ros2 launch acea_concert detection.launch.py \
+ros2 launch acea_concert detection_v8_complete_dev.launch.py \
   rgb_topic:=/camera_front/color/image_raw \
   depth_topic:=/camera_front/aligned_depth_to_color/image_raw \
   camera_info_topic:=/camera_front/color/camera_info
@@ -655,10 +721,12 @@ base_R_ee_des = base_R_gap * gap_R_ee_des
 - `src/weld_opt.py`: offline trajectory optimization and MAT file generation.
 - `src/plan_homing_from_mat.py`: adds a collision-aware `q_homing` trajectory to a MAT file.
 - `src/replayer.py`: replay and RViz visualization of the optimized trajectory.
-- `launch/weld_sim.launch.py`: simulation launch file; accepts `mat_file` and `optimized_start`.
+- `launch/weld_sim.launch.py`: simulation launch file; spawns the pipe using geometry from `mat_files/weld_concert.mat`.
 - `src/gap_pose_publisher.py`: simulation ground-truth gap pose publisher.
-- `launch/detection.launch.py`: perception launch file for detector + gap pose transform.
+- `launch/detection_v8_complete_dev.launch.py`: current arm-camera perception launch for detector + gap pose transform.
+- `launch/detection.launch.py`: older baseline perception launch.
 - `src/detection/acea_pipe_junction_node.py`: RGB-D gap detector and camera-frame gap plane publisher.
+- `src/detection/acea_pipe_junction_node_v8_complete_dev.py`: v8-complete RGB-D pipe-junction detector.
 - `src/detection/gap_pose_robot_node.py`: transforms camera-frame gap geometry into `/gap/pose_robot` in `base_link`.
 - `config/detector.yaml`: detector topic and perception parameters.
 - `config/gap_pose_robot.yaml`: `/gap/pose_robot` TF/config parameters.

@@ -45,10 +45,11 @@
     require_metric_3d: true
     reject_assumed_depth: true
 
-    # The detector can accept sparsely while acquiring/tracking. Keep the
-    # controller input continuous by republishing the last valid gap pose for a
-    # bounded time instead of letting /gap/pose_robot drop to sub-Hz.
-    hold_last_pose: true
+    # Optional visual/debug convenience only. Keep this false for controller
+    # tests by default: republishing stale poses can hide detector dropouts and
+    # make the robot consume an old gap pose. Enable explicitly only when a
+    # bounded hold is acceptable for the experiment.
+    hold_last_pose: false
     hold_publish_rate_hz: 20.0
     hold_max_age_s: 2.5
 

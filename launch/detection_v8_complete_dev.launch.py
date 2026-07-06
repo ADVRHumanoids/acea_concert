@@ -17,6 +17,7 @@ equivalent camera_F bridge.
 import os
 from pathlib import Path
 
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
@@ -94,6 +95,16 @@ def _resolve_pipe_radius(context) -> float | None:
     return radius
 
 
+def _resolve_detector_extra_config(context, use_sim_time: bool, camera_preset: str) -> str:
+    value = LaunchConfiguration("detector_extra_config").perform(context).strip()
+    if value and value.lower() != "auto":
+        return value
+    preset = camera_preset.lower()
+    use_sim_preset = preset == "sim" or (preset == "auto" and use_sim_time)
+    config_name = "detector_v8_complete_sim.yaml" if use_sim_preset else "detector_v8_complete_real.yaml"
+    return str(Path(get_package_share_directory("acea_concert")) / "config" / config_name)
+
+
 def _launch_nodes(context, *args, **kwargs):
     pkg = FindPackageShare("acea_concert")
     use_sim_time_text = LaunchConfiguration("use_sim_time").perform(context)
@@ -126,6 +137,7 @@ def _launch_nodes(context, *args, **kwargs):
     if qos_arg.lower() == "auto":
         qos_arg = "reliable" if use_sim_time or camera_preset.lower() == "sim" else "best_effort"
 
+    detector_extra_config = _resolve_detector_extra_config(context, use_sim_time, camera_preset)
     pipe_radius = _resolve_pipe_radius(context)
     pipe_radius_params = [] if pipe_radius is None else [{"pipe_radius_m": pipe_radius}]
 
@@ -136,7 +148,7 @@ def _launch_nodes(context, *args, **kwargs):
         output="screen",
         parameters=[
             LaunchConfiguration("detector_config"),
-            LaunchConfiguration("detector_extra_config"),
+            detector_extra_config,
             {"junction_acceptance_mode": LaunchConfiguration("junction_acceptance_mode")},
             {"rgb_topic": rgb},
             {"depth_topic": depth},
@@ -175,8 +187,11 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "detector_extra_config",
-            default_value=PathJoinSubstitution([pkg, "config", "detector_v8_complete_dev.yaml"]),
-            description="v8-complete override YAML.",
+            default_value="auto",
+            description=(
+                "v8-complete override YAML. auto selects detector_v8_complete_sim.yaml "
+                "when use_sim_time/camera_preset selects sim, otherwise detector_v8_complete_real.yaml."
+            ),
         ),
         DeclareLaunchArgument(
             "gap_pose_config",

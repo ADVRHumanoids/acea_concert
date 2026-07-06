@@ -1,9 +1,7 @@
 /**:
   ros__parameters:
-    # v8-complete default: color-agnostic pipe tracking, but keep all cylinder
-    # safety gates enabled. Do not set the four gates below to false as a sim
-    # workaround: that makes the detector accept non-cylindrical masks and can
-    # publish fake junctions/poses.
+    # Real-camera v8-complete preset. Color prior stays OFF so pipe detection is
+    # not tied to orange paint; geometry/normal/cylinder guards stay ON.
     pipe_color_prior_enabled: false
     pipe_component_require_valid_cylinder: true
     junction_require_cylinder_mask: true

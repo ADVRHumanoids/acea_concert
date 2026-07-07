@@ -433,12 +433,7 @@ while is_colliding == True or solution_found == False:
         rclpy.spin_once(point_pub, timeout_sec=0.0)
 
     print(f'Publishing point: x={random_pose_x[0]}, y={random_pose_y[0]}')
-    attempt_log.write(
-        attempt_count,
-        "start",
-        random_pose_x=float(random_pose_x[0]),
-        random_pose_y=float(random_pose_y[0]),
-    )
+    attempt_log.write(attempt_count, "start")
 
     initial_guess_q = ti.model.q0.copy()
     initial_guess_q[0] = random_pose_x  # Randomize base X position in initial guess

@@ -15,6 +15,7 @@ Usage (simulation must already be running and homing already completed):
 
 import argparse
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from time import sleep, perf_counter
 
@@ -37,14 +38,11 @@ from xbot2_interface import pyxbot2_interface as xbi
 from cartesian_interface import pyci
 
 # ── Parameters ───────────────────────────────────────────────────────────────
-TASK_NAME   = 'ee_F'   # CartesIO task name for the welding end-effector
 DT          = 0.01     # [s]   controller dt (100 Hz)
 
-# The MAT trajectory contains the whole robot, but this controller should only
-# command the welding axes. A-D wheel modules are owned by omnisteering.
-WELD_JOINTS = (
-    'J1_E', 'J2_E',
-    'J1_F', 'J2_F', 'J3_F', 'J4_F', 'J5_F', 'J6_F',
+BASE_AND_WHEEL_JOINTS = (
+    'J1_A', 'J1_B', 'J1_C', 'J1_D',
+    'J_wheel_A', 'J_wheel_B', 'J_wheel_C', 'J_wheel_D',
 )
 
 # ── Trajectory (world X back-and-forth) ──────────────────────────────────────
@@ -75,6 +73,18 @@ CARTESIO_YAML = Path('/home/user/concert_ws/src/acea_concert/config/cartesio_sta
 
 # ── Mat file trajectory ───────────────────────────────────────────────────────
 MAT_FILE = Path('/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat')
+
+
+def ee_link_from_urdf(urdf: str):
+    links = {
+        link.attrib['name']
+        for link in ET.fromstring(urdf).findall('link')
+        if 'name' in link.attrib
+    }
+    for ee_link in ('ee_F', 'ee_E'):
+        if ee_link in links:
+            return ee_link
+    raise RuntimeError('Neither ee_F nor ee_E exists in the URDF.')
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -186,7 +196,7 @@ weld_quat_traj_gap = np.asarray(
 VIRTUAL = {'universe', 'reference'}
 jnames  = [n for n in all_jnames if n not in VIRTUAL]
 
-weld_jnames = [name for name in jnames if name in WELD_JOINTS]
+weld_jnames = [name for name in jnames if name not in BASE_AND_WHEEL_JOINTS]
 
 print(f"[controller] Trajectory: {N} nodes, dt={trj_dt:.4f}s, duration={trj_dur:.2f}s")
 print(f"[controller] Actuated joint names ({len(jnames)}): {jnames}")
@@ -209,6 +219,7 @@ controller_ros = ControllerRosInterface(
 
 urdf, srdf = controller_ros.robot_description()
 print("[controller] URDF and SRDF received.")
+ee_link = ee_link_from_urdf(urdf)
 
 # ── Build ConfigOptions for RobotInterface2 ───────────────────────────────────
 cfg = xbi.ConfigOptions()
@@ -256,7 +267,7 @@ model.update()
 print("[controller] Building standalone CartesianInterface …")
 ci = pyci.CartesianInterface.MakeInstance(
     'OpenSot',
-    CARTESIO_YAML.read_text(),
+    CARTESIO_YAML.read_text().replace('distal_link: ee_F', f'distal_link: {ee_link}'),
     model,
     DT,
 )
@@ -264,10 +275,10 @@ ci = pyci.CartesianInterface.MakeInstance(
 print(f"[controller] All tasks: {ci.getTaskList()}")
 postural_task = ci.getTask('Postural')
 
-ee_task = ci.getTask(TASK_NAME)
+ee_task = ci.getTask(ee_link)
 ee_distal = ee_task.getDistalLink()
 ee_base   = ee_task.getBaseLink()
-print(f"[controller] Task '{TASK_NAME}': {ee_distal} → {ee_base}")
+print(f"[controller] Task '{ee_link}': {ee_distal} → {ee_base}")
 
 # ── initial pose  ────────────────────────────────────────────────────────────
 initial_ee_pose = model.getPose(ee_distal, ee_base).copy()

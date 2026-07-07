@@ -3,6 +3,7 @@
 
 import argparse
 import sys
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from time import sleep
 
@@ -18,12 +19,24 @@ from xbot2_interface import pyxbot2_interface as xbi
 DEFAULT_MAT_FILE = Path(
     "/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat")
 
-WELD_JOINTS = (
-    "J1_E", "J2_E",
-    "J1_F", "J2_F", "J3_F", "J4_F", "J5_F", "J6_F",
+BASE_AND_WHEEL_JOINTS = (
+    "J1_A", "J1_B", "J1_C", "J1_D",
+    "J_wheel_A", "J_wheel_B", "J_wheel_C", "J_wheel_D",
 )
 
 VIRTUAL_JOINTS = {"universe", "reference"}
+
+
+def ee_link_from_urdf(urdf: str):
+    links = {
+        link.attrib["name"]
+        for link in ET.fromstring(urdf).findall("link")
+        if "name" in link.attrib
+    }
+    for ee_link in ("ee_F", "ee_E"):
+        if ee_link in links:
+            return ee_link
+    raise RuntimeError("Neither ee_F nor ee_E exists in the URDF.")
 
 
 def fetch_robot_description(node_name: str):
@@ -62,7 +75,7 @@ def load_home_map(mat_file: Path):
     return {
         name: float(q_home_act[i])
         for i, name in enumerate(jnames)
-        if name in WELD_JOINTS
+        if name not in BASE_AND_WHEEL_JOINTS
     }
 
 
@@ -122,13 +135,14 @@ def print_tracking_error(robot, target_map: dict[str, float],
     desired_map.update(target_map)
 
     model = xbi.ModelInterface2(urdf, srdf, "pin")
+    ee_link = ee_link_from_urdf(urdf)
     model.setJointPosition(desired_map)
     model.update()
-    ee_pose_des = model.getPose("ee_F", "world")
+    ee_pose_des = model.getPose(ee_link, "world")
 
     model.setJointPosition(motor_map)
     model.update()
-    ee_pose_cur = model.getPose("ee_F", "world")
+    ee_pose_cur = model.getPose(ee_link, "world")
 
     ee_err = ee_pose_des.translation - ee_pose_cur.translation
     print(

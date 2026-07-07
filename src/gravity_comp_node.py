@@ -10,10 +10,18 @@ from xbot2_interface import pyxbot2_interface as xbi
 from controller_ros import fetch_robot_description
 
 
-ARM_JOINTS = (
-    'J1_E', 'J2_E',
-    'J1_F', 'J2_F', 'J3_F', 'J4_F', 'J5_F', 'J6_F',
+BASE_AND_WHEEL_JOINTS = (
+    'J1_A', 'J1_B', 'J1_C', 'J1_D',
+    'J_wheel_A', 'J_wheel_B', 'J_wheel_C', 'J_wheel_D',
 )
+
+
+def _is_gravity_comp_joint(name):
+    lower_name = name.lower()
+    return (
+        name not in BASE_AND_WHEEL_JOINTS
+        and not lower_name.startswith(('base', 'world', 'floating_base'))
+    )
 
 
 def _stamp_from_xbot_time(xbot_time):
@@ -60,8 +68,8 @@ class GravityCompNode(Node):
 
         gcomp_map = self.model.vToMap(self.model.computeGravityCompensation())
         self.gravity_comp_joints = [
-            name for name in ARM_JOINTS
-            if name in gcomp_map
+            name for name in robot_q_map
+            if _is_gravity_comp_joint(name) and name in gcomp_map
         ]
         if not self.gravity_comp_joints:
             raise RuntimeError("No arm joints are available for gravity comp.")

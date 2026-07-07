@@ -7,6 +7,7 @@ Usage:
     ros2 launch acea_concert weld_sim.launch.py gui:=false
     ros2 launch acea_concert weld_sim.launch.py xbot2:=false
     ros2 launch acea_concert weld_sim.launch.py rviz:=true
+    ros2 launch acea_concert weld_sim.launch.py use_prismatic_joint:=true
 """
  
 import os
@@ -319,8 +320,22 @@ def generate_launch_description():
         gazebo_world_file,
         "'",
     ])
+    prismatic_joint_arg = PythonExpression([
+        "' --use-prismatic-joint' if '",
+        LaunchConfiguration("use_prismatic_joint"),
+        "' == 'true' else ''",
+    ])
+    modular_description = PythonExpression([
+        "'",
+        MODULAR_DESCRIPTION,
+        " --use-prismatic-joint' if '",
+        LaunchConfiguration("use_prismatic_joint"),
+        "' == 'true' else '",
+        MODULAR_DESCRIPTION,
+        "'",
+    ])
     robot_description_tf = Command([
-        'python3', ' ', MODULAR_DESCRIPTION,
+        'python3', ' ', MODULAR_DESCRIPTION, prismatic_joint_arg,
         ' -o urdf -a gazebo_urdf:=false floating_base:=true',
         ' realsense:=', LaunchConfiguration('realsense'),
         ' velodyne:=', LaunchConfiguration('velodyne'),
@@ -371,6 +386,8 @@ def generate_launch_description():
         DeclareLaunchArgument("rviz",      default_value="false", description="Launch RViz"),
         DeclareLaunchArgument("realsense", default_value="true", description="Include RealSense"),
         DeclareLaunchArgument("velodyne",  default_value="false", description="Include Velodyne"),
+        DeclareLaunchArgument("use_prismatic_joint", default_value="false",
+                              description="Use the prismatic cart block instead of the first yaw joint in concert_with_torch.py"),
         DeclareLaunchArgument("start_front_camera_bridges", default_value="true",
                               description="Start explicit ros_gz_bridge GZ->ROS bridges for the front D435i RGB/depth/camera_info topics"),
         DeclareLaunchArgument("publish_robot_state_tf", default_value="false",
@@ -401,7 +418,7 @@ def generate_launch_description():
                               description="Pipe center Y in the robot nominal start frame [m]"),
         DeclareLaunchArgument("pipe_y_axis_yaw", default_value="0.0",
                               description="Yaw of the pipe/gap Y axis from nominal +Y around world Z [rad]"),
- 
+
         robot_state_publisher_node,
         front_camera_bridge_node,
  
@@ -410,7 +427,7 @@ def generate_launch_description():
                 get_package_share_directory("concert_gazebo"), "launch", "modular.launch.py"
             )),
             launch_arguments={
-                "modular_description": MODULAR_DESCRIPTION,
+                "modular_description": modular_description,
                 "xbot2_gui":           "false",
                 "gui":                 LaunchConfiguration("gui"),
                 "xbot2":               LaunchConfiguration("xbot2"),

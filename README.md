@@ -108,6 +108,12 @@ Run in this order:
 
 ### Terminal Environment
 
+Open a terminal and connect to the container:
+
+```bash
+docker exec -it [container-id] bash
+
+```
 If you have `tmux`, create one ready-to-launch terminal session:
 
 ```bash
@@ -494,6 +500,12 @@ concert_controller --gap-filter-tau 0.1
 ```
 
 `0` disables the filter. A small value like `0.05`-`0.15` seconds is a good starting range.
+
+To replay the optimized trajectory without `/gap/pose_robot`, run open-loop:
+
+```bash
+concert_controller --open-loop
+```
 
 For slow welding with noisy camera poses, use a history window and reject big
 camera jumps:

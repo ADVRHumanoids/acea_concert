@@ -7,7 +7,7 @@ Usage:
     ros2 launch acea_concert weld_sim.launch.py gui:=false
     ros2 launch acea_concert weld_sim.launch.py xbot2:=false
     ros2 launch acea_concert weld_sim.launch.py rviz:=true
-    ros2 launch acea_concert weld_sim.launch.py mat_file:=mat_files/weld_concert.mat optimized_robot_pose:=true
+    ros2 launch acea_concert weld_sim.launch.py use_prismatic_joint:=true
 """
 
 import os
@@ -221,7 +221,84 @@ def generate_launch_description():
         name="GZ_SIM_RESOURCE_PATH",
         value=GZ_RESOURCE_PATH + ":" + os.environ.get("GZ_SIM_RESOURCE_PATH", ""),
     )
-
+    modular_python_env = SetEnvironmentVariable(
+        name="PYTHONPATH",
+        value=str(PATH_TO_MODULAR_PYTHON) + ":" + os.environ.get("PYTHONPATH", ""),
+    )
+    # concert_gazebo's gui:=false path currently does not reliably add `-s`
+    # before invoking gz sim. Passing the world file with `-s` keeps this
+    # package runnable in headless Docker without modifying concert_gazebo.
+    gazebo_world_file = os.path.join(
+        get_package_share_directory("acea_concert"),
+        "world",
+        "empty_world_no_ros2_camera_system.sdf",
+    )
+    gazebo_world_file_with_headless_flag = PythonExpression([
+        "'",
+        gazebo_world_file,
+        " -s' if '",
+        LaunchConfiguration("gui"),
+        "' == 'false' else '",
+        gazebo_world_file,
+        "'",
+    ])
+    prismatic_joint_arg = PythonExpression([
+        "' --use-prismatic-joint' if '",
+        LaunchConfiguration("use_prismatic_joint"),
+        "' == 'true' else ''",
+    ])
+    modular_description = PythonExpression([
+        "'",
+        MODULAR_DESCRIPTION,
+        " --use-prismatic-joint' if '",
+        LaunchConfiguration("use_prismatic_joint"),
+        "' == 'true' else '",
+        MODULAR_DESCRIPTION,
+        "'",
+    ])
+    robot_description_tf = Command([
+        'python3', ' ', MODULAR_DESCRIPTION, prismatic_joint_arg,
+        ' -o urdf -a gazebo_urdf:=false floating_base:=true',
+        ' realsense:=', LaunchConfiguration('realsense'),
+        ' velodyne:=', LaunchConfiguration('velodyne'),
+        ' ultrasound:=false',
+        ' use_gpu_ray:=false',
+        ' -r modularbot_tf'
+    ], on_stderr='ignore')
+    robot_state_publisher_node = Node(
+        condition=IfCondition(LaunchConfiguration("publish_robot_state_tf")),
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        name="robot_state_publisher",
+        output="screen",
+        parameters=[
+            {"robot_description": robot_description_tf},
+            {"use_sim_time": True},
+        ],
+    )
+    front_camera_bridge_condition = IfCondition(PythonExpression([
+        "'",
+        LaunchConfiguration("realsense"),
+        "' == 'true' and '",
+        LaunchConfiguration("start_front_camera_bridges"),
+        "' == 'true'",
+    ]))
+    front_camera_bridge_node = Node(
+        condition=front_camera_bridge_condition,
+        package="ros_gz_bridge",
+        executable="parameter_bridge",
+        name="d435i_front_camera_bridge",
+        arguments=[
+            "/D435i_camera_front/image@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/D435i_camera_front/depth_image@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/D435i_camera_front/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+        ],
+        remappings=[
+            ("/D435i_camera_front/image", "/D435i_camera_front/color/image_raw"),
+        ],
+        output="screen",
+    )
+ 
     return LaunchDescription([
         gz_resource_env,
 
@@ -230,10 +307,32 @@ def generate_launch_description():
         DeclareLaunchArgument("rviz",      default_value="false", description="Launch RViz"),
         DeclareLaunchArgument("realsense", default_value="true", description="Include RealSense"),
         DeclareLaunchArgument("velodyne",  default_value="false", description="Include Velodyne"),
-        DeclareLaunchArgument("mat_file", default_value=str(DEFAULT_MAT_FILE),
-                              description="Optimization MAT file used for pipe geometry and optimized_robot_pose"),
-        DeclareLaunchArgument("optimized_robot_pose", default_value="false",
-                              description="Place the gap at the optimized pose relative to the robot from mat_file"),
+        DeclareLaunchArgument("use_prismatic_joint", default_value="false",
+                              description="Use the prismatic cart block instead of the first yaw joint in concert_with_torch.py"),
+        DeclareLaunchArgument("start_front_camera_bridges", default_value="true",
+                              description="Start explicit ros_gz_bridge GZ->ROS bridges for the front D435i RGB/depth/camera_info topics"),
+        DeclareLaunchArgument("publish_robot_state_tf", default_value="false",
+                              description="Fallback-only: publish URDF fixed transforms if the main robot launch does not already provide base_link -> D435i camera frames"),
+        DeclareLaunchArgument("pipe_radius_m", default_value=str(PIPE_RADIUS),
+                              description="Pipe radius used for the spawned debug pipe [m]"),
+        DeclareLaunchArgument("pipe_total_length_m", default_value=str(PIPE_TOTAL_LENGTH),
+                              description="Total pipe length before splitting around the gap [m]"),
+        DeclareLaunchArgument("pipe_gap_m", default_value=str(PIPE_GAP),
+                              description="Visible gap between the two spawned pipe halves [m]"),
+        DeclareLaunchArgument("pipe_z_m", default_value=str(PIPE_Z),
+                              description="Pipe/gap center height used for the spawned debug pipe [m]"),
+        DeclareLaunchArgument("spawn_gap_visual_marker", default_value="true",
+                              description="Spawn a short black cylindrical mini-pipe inside the junction for RGB detector smoke tests"),
+        DeclareLaunchArgument("gap_visual_marker_width_m", default_value="-1.0",
+                              description="Length of the black junction filler along the pipe axis [m]; <=0 follows pipe_gap_m"),
+        DeclareLaunchArgument("spawn_gap_black_backdrop", default_value="false",
+                              description="Spawn a large black panel behind the pipe so the real gap appears dark in RGB"),
+        DeclareLaunchArgument("gap_black_backdrop_offset_m", default_value="0.35",
+                              description="Distance from the back pipe surface to the black backdrop [m]"),
+        DeclareLaunchArgument("gap_black_backdrop_length_m", default_value="7.0",
+                              description="Minimum black backdrop length along the pipe axis [m]"),
+        DeclareLaunchArgument("gap_black_backdrop_height_m", default_value="2.0",
+                              description="Minimum black backdrop height [m]"),
         DeclareLaunchArgument("pipe_offset_x", default_value="2.0",
                               description="Pipe center X in the robot nominal start frame [m]"),
         DeclareLaunchArgument("pipe_offset_y", default_value="0.0",
@@ -241,20 +340,26 @@ def generate_launch_description():
         DeclareLaunchArgument("pipe_y_axis_yaw", default_value="0.0",
                               description="Yaw of the pipe/gap Y axis from nominal +Y around world Z [rad]"),
 
+        robot_state_publisher_node,
+        front_camera_bridge_node,
+ 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
                 get_package_share_directory("concert_gazebo"), "launch", "modular.launch.py"
             )),
             launch_arguments={
-                "modular_description": MODULAR_DESCRIPTION,
+                "modular_description": modular_description,
                 "xbot2_gui":           "false",
                 "gui":                 LaunchConfiguration("gui"),
                 "xbot2":               LaunchConfiguration("xbot2"),
                 "rviz":                LaunchConfiguration("rviz"),
                 "realsense":           LaunchConfiguration("realsense"),
                 "velodyne":            LaunchConfiguration("velodyne"),
+                "world_file":          gazebo_world_file_with_headless_flag,
             }.items(),
         ),
-
+ 
         OpaqueFunction(function=_spawn_pipe_actions),
     ])
+ 
+ 

@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import os
 import sys
@@ -8,9 +9,20 @@ from modular.URDF_writer import UrdfWriter, write_file_to_stdout
 is_floating_base = True
 
 WELD_TORCH_CAMERA_NAME = "camera_F"
-WELD_TORCH_CAMERA_PARENT = "ee_F"
 WELD_TORCH_CAMERA_XYZ = [0.1, 0.0, -0.05]
 WELD_TORCH_CAMERA_RPY = [3.141593, -1.4, 0.0]  # 180 deg roll keeps the view direction, flips camera upright
+
+
+def parse_local_args():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument(
+        "--use-prismatic-joint",
+        action="store_true",
+        help="Use the prismatic cart block instead of the first yaw joint.",
+    )
+    args, remaining = parser.parse_known_args()
+    sys.argv = [sys.argv[0], *remaining]
+    return args
 
 
 @contextlib.contextmanager
@@ -24,6 +36,9 @@ def suppress_stdout():
             sys.stdout = old_stdout
 
 
+args = parse_local_args()
+
+
 def add_weld_torch_camera(urdf_writer):
     ET.SubElement(
         urdf_writer.root,
@@ -34,7 +49,7 @@ def add_weld_torch_camera(urdf_writer):
         urdf_writer.root,
         "xacro:add_realsense_d_camera",
         name=WELD_TORCH_CAMERA_NAME,
-        parent_name=WELD_TORCH_CAMERA_PARENT,
+        parent_name="ee_F" if args.use_prismatic_joint else "ee_E",
         add_gazebo_sensor="true",
     )
     ET.SubElement(
@@ -101,23 +116,25 @@ with suppress_stdout():
     prismatic_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['p'] = 5000.0
     prismatic_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['d'] = 80.0
 
-    # big yaw (a.k.a. ralla)
-    data = urdf_writer.add_module('experimental/module_joint_yaw_XL_concert.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0})
-    homing_joint_map[str(data['name'])] = -3.14159265 / 2  # -pi/2, matches weld_opt.py
+    if args.use_prismatic_joint:
+        data = urdf_writer.add_module('experimental/module_joint_yaw_XL_concert.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0})
+        homing_joint_map[str(data['name'])] = -3.14159265 / 2
 
-    # prismatic joint  →  J2_E
-    data = urdf_writer.add_module('experimental/module_joint_prismatic_concert.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0})
-    homing_joint_map[str(data['name'])] = 1.0 
+        # prismatic joint  ->  J2_E
+        data = urdf_writer.add_module('experimental/module_joint_prismatic_concert.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0})
+        homing_joint_map[str(data['name'])] = 1.0
 
-    data = urdf_writer.add_module('experimental/module_hub_prismatic_cart_concert.json', module_name='hub_prismatic_cart', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0})
-    homing_joint_map[str(data['name'])] = 0.0
+        data = urdf_writer.add_module('experimental/module_hub_prismatic_cart_concert.json', module_name='hub_prismatic_cart', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0})
+        homing_joint_map[str(data['name'])] = 0.0
 
-    # # Left mounted interface
-    data = urdf_writer.select_module_from_name('hub_prismatic_cart_con4')
-
+        # Left mounted interface
+        data = urdf_writer.select_module_from_name('hub_prismatic_cart_con4')
+    else:
+        data = urdf_writer.add_module('concert/module_joint_yaw_A_concert.json')
+        homing_joint_map[str(data['name'])] = 0.0
 
     data = urdf_writer.add_module('concert/module_joint_elbow_A_concert.json')  # J1_F
-    homing_joint_map[str(data['name'])] = -0.85
+    homing_joint_map[str(data['name'])] = -0.85 if args.use_prismatic_joint else 0.85
 
     data = urdf_writer.add_module('concert/module_joint_yaw_A_concert.json')    # J2_F
     homing_joint_map[str(data['name'])] = 0.0
@@ -126,21 +143,24 @@ with suppress_stdout():
     data = urdf_writer.add_module('concert/module_link_straight_300_concert.json')
 
     data = urdf_writer.add_module('concert/module_joint_elbow_A_concert.json')  # J3_F
-    homing_joint_map[str(data['name'])] = -1.47
+    homing_joint_map[str(data['name'])] = -1.47 if args.use_prismatic_joint else 1.47
 
     data = urdf_writer.add_module('concert/module_joint_yaw_A_concert.json')    # J4_F
     homing_joint_map[str(data['name'])] = 0.0
     
     #add a 30cm passive link
-    data = urdf_writer.add_module('concert/module_link_straight_300_concert.json')
+    data = urdf_writer.add_module('concert/module_link_straight_400_concert.json')
 
     data = urdf_writer.add_module('concert/module_joint_elbow_B_concert.json')  # J5_F
-    homing_joint_map[str(data['name'])] = 0.75
+    homing_joint_map[str(data['name'])] = 0.75 if args.use_prismatic_joint else -0.75
 
     data = urdf_writer.add_module('concert/module_joint_yaw_B_concert.json')    # J6_F
     homing_joint_map[str(data['name'])] = 0.0
 
-    data = urdf_writer.add_module('experimental/module_weld_torch_dummy.json')
+    if args.use_prismatic_joint:
+        data = urdf_writer.add_module('experimental/module_weld_torch_dummy.json')
+    else:
+        data = urdf_writer.add_module('experimental/module_weld_torch_dummy.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 3.14159265})
     add_weld_torch_camera(urdf_writer)
 
     # # Right mounted interface

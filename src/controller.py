@@ -10,6 +10,7 @@ Usage (simulation must already be running and homing already completed):
     ros2 launch acea_concert weld_sim.launch.py
     ros2 run acea_concert home_to_weld_start.py
     python3 controller.py
+    python3 controller.py --open-loop
 """
 
 import argparse
@@ -79,6 +80,15 @@ MAT_FILE = Path('/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.m
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run the weld end-effector controller.")
+    parser.add_argument(
+        "--open-loop",
+        "--replay-open-loop",
+        action="store_true",
+        help=(
+            "Replay the optimized trajectory without requiring "
+            "/gap/pose_robot or applying gap-frame corrections."
+        ),
+    )
     parser.add_argument(
         "--stop-on-gap-loss",
         action=argparse.BooleanOptionalAction,
@@ -268,6 +278,8 @@ prev_x_err = None            # gap-tangent error at previous tick
 y_err_integral = 0.0
 x_err_integral = 0.0
 # print("[controller] Starting PD control loop …")
+if args.open_loop:
+    print("[controller] Open-loop replay: /gap/pose_robot is not required.")
 
 # ── Control loop ──────────────────────────────────────────────────────────────
 t = 0.0
@@ -279,8 +291,11 @@ while True:
     gap_pose_age_s = controller_ros.gap_pose_age_s()
     gap_pose_fresh = controller_ros.gap_pose_is_fresh(args.gap_pose_timeout)
     should_pause_for_gap = (
-        gap_pose_age_s is None
-        or (args.stop_on_gap_loss and not gap_pose_fresh)
+        not args.open_loop
+        and (
+            gap_pose_age_s is None
+            or (args.stop_on_gap_loss and not gap_pose_fresh)
+        )
     )
     if should_pause_for_gap:
         if not gap_pose_paused:
@@ -328,8 +343,9 @@ while True:
     ee_pos_des = ee_pose_des.translation.copy()
 
     # NOW: read the measured gap pose and full gap frame from ROS topics.
-    gap_origin_base = controller_ros.gap_origin_base
-    gap_axes_base = controller_ros.gap_axes_base
+    # In open-loop mode the nominal optimized pose is replayed as-is.
+    gap_origin_base = None if args.open_loop else controller_ros.gap_origin_base
+    gap_axes_base = None if args.open_loop else controller_ros.gap_axes_base
     has_gap_axes = gap_axes_base is not None
 
     if has_gap_axes:
@@ -343,7 +359,7 @@ while True:
 
     # ── Pipe-relative weld target in base_link frame ────────────────────────
     weld_pos_des_gap = weld_gap_trajectory.value(t_traj)
-    if gap_origin_base is not None:
+    if not args.open_loop and gap_origin_base is not None:
         weld_target_pos_base = gap_origin_base + base_R_gap @ weld_pos_des_gap
     else:
         weld_target_pos_base = ee_pos_des
@@ -362,53 +378,58 @@ while True:
     # y_test_offset = Y_TEST_AMP * math.sin(2 * math.pi * t / TRJ_PERIOD) * world_y_in_ee
     # ee_pose_des.translation += y_test_offset
 
-    gains = controller_ros.controller_gains()
-
-    # ── PD correction toward the y-gap plane ─────────────────────────────────
     y_err = gap_normal_coord - ee_normal_coord # gap_normal_coord is the desired position of the EE along the gap normal, ee_normal_coord is the current position of the EE along the gap normal, so their difference is how much we need to correct to get to the desired position
-    y_err_dot = 0.0 if prev_y_err is None else (y_err - prev_y_err) / DT
-    y_err_integral += y_err * DT
-    prev_y_err = y_err
-
-    vy_cmd = (
-        gains['kp_normal'] * y_err
-        + gains['kd_normal'] * y_err_dot
-        # + KI_XYZ[1] * y_err_integral
-    )
-    vy_cmd = float(np.clip(vy_cmd, -MAX_Y_VEL, MAX_Y_VEL))
-
     x_err = gap_tangent_target_coord - ee_tangent_coord
-    x_err_dot = 0.0 if prev_x_err is None else (x_err - prev_x_err) / DT
-    x_err_integral += x_err * DT
-    prev_x_err = x_err
 
-    vx_cmd = (
-        gains['kp_tangent_x'] * x_err
-        + gains['kd_tangent_x'] * x_err_dot
-        # + KI_XYZ[0] * x_err_integral
-    )
-    vx_cmd = float(np.clip(vx_cmd, -MAX_X_VEL, MAX_X_VEL))
-
-    # Apply both corrections in the gap frame: normal keeps the tool centered
-    # between the pipes, tangent keeps it on the moving/rotated gap line.
     ee_pose_des_mod = ee_pose_des.copy()
-    commanded_normal_coord = ee_normal_coord + vy_cmd * DT
-    postural_normal_coord = float(np.dot(ee_pos_des, gap_y_axis_base))
-    normal_delta = commanded_normal_coord - postural_normal_coord
-    
-    commanded_tangent_coord = ee_tangent_coord + vx_cmd * DT
-    postural_tangent_coord = float(np.dot(ee_pos_des, gap_x_axis_base))
-    tangent_delta = commanded_tangent_coord - postural_tangent_coord
-    ee_pose_des_mod.translation = (
-        ee_pos_des
-        + normal_delta * gap_y_axis_base
-        + tangent_delta * gap_x_axis_base
-    )
-    
-    # Apply the optimized tool orientation relative to the current gap frame.
-    if has_gap_axes:
-        gap_R_ee_des = weld_gap_orientation.matrix(t_traj)
-        ee_pose_des_mod.linear = base_R_gap @ gap_R_ee_des
+    if args.open_loop:
+        vy_cmd = 0.0
+        vx_cmd = 0.0
+    else:
+        gains = controller_ros.controller_gains()
+
+        # ── PD correction toward the y-gap plane ─────────────────────────────
+        y_err_dot = 0.0 if prev_y_err is None else (y_err - prev_y_err) / DT
+        y_err_integral += y_err * DT
+        prev_y_err = y_err
+
+        vy_cmd = (
+            gains['kp_normal'] * y_err
+            + gains['kd_normal'] * y_err_dot
+            # + KI_XYZ[1] * y_err_integral
+        )
+        vy_cmd = float(np.clip(vy_cmd, -MAX_Y_VEL, MAX_Y_VEL))
+
+        x_err_dot = 0.0 if prev_x_err is None else (x_err - prev_x_err) / DT
+        x_err_integral += x_err * DT
+        prev_x_err = x_err
+
+        vx_cmd = (
+            gains['kp_tangent_x'] * x_err
+            + gains['kd_tangent_x'] * x_err_dot
+            # + KI_XYZ[0] * x_err_integral
+        )
+        vx_cmd = float(np.clip(vx_cmd, -MAX_X_VEL, MAX_X_VEL))
+
+        # Apply both corrections in the gap frame: normal keeps the tool
+        # centered, tangent keeps it on the moving/rotated gap line.
+        commanded_normal_coord = ee_normal_coord + vy_cmd * DT
+        postural_normal_coord = float(np.dot(ee_pos_des, gap_y_axis_base))
+        normal_delta = commanded_normal_coord - postural_normal_coord
+
+        commanded_tangent_coord = ee_tangent_coord + vx_cmd * DT
+        postural_tangent_coord = float(np.dot(ee_pos_des, gap_x_axis_base))
+        tangent_delta = commanded_tangent_coord - postural_tangent_coord
+        ee_pose_des_mod.translation = (
+            ee_pos_des
+            + normal_delta * gap_y_axis_base
+            + tangent_delta * gap_x_axis_base
+        )
+
+        # Apply the optimized tool orientation relative to the current gap frame.
+        if has_gap_axes:
+            gap_R_ee_des = weld_gap_orientation.matrix(t_traj)
+            ee_pose_des_mod.linear = base_R_gap @ gap_R_ee_des
 
     linear_correction_angle, _ = rotation_correction(
         ee_pose_des_mod.linear,

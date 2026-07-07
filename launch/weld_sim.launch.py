@@ -7,15 +7,17 @@ Usage:
     ros2 launch acea_concert weld_sim.launch.py gui:=false
     ros2 launch acea_concert weld_sim.launch.py xbot2:=false
     ros2 launch acea_concert weld_sim.launch.py rviz:=true
+    ros2 launch acea_concert weld_sim.launch.py mat_file:=mat_files/weld_concert.mat optimized_robot_pose:=true
     ros2 launch acea_concert weld_sim.launch.py use_prismatic_joint:=true
 """
  
 import os
 import math
 from pathlib import Path
-import sys
  
-import scipy
+import numpy as np
+from scipy.io import loadmat
+from scipy.spatial.transform import Rotation as R
  
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -31,37 +33,62 @@ PATH_TO_ACEA_CONCERT = PATH_TO_CONCERT_WS / "src" / "acea_concert"
 PATH_TO_MODULAR_PYTHON = PATH_TO_CONCERT_WS / "src" / "modular" / "src"
 MODULAR_DESCRIPTION = str(PATH_TO_ACEA_CONCERT / "src" / "modular" / "concert_with_torch.py")
 GZ_RESOURCE_PATH = str(PATH_TO_CONCERT_WS / "install" / "share")
-MAT_FILE = PATH_TO_ACEA_CONCERT / "mat_files" / "weld_concert.mat"
- 
-if not MAT_FILE.exists():
-  print(f"File not found: {MAT_FILE}")
-  sys.exit(1)
- 
-# ── Pipe geometry & placement from weld_opt MAT file ────────────────────────
-matdata = scipy.io.loadmat(str(MAT_FILE))
-init_pos_robot = matdata['initial_robot_pose'][0]
-pipe_center = matdata['pos_center_pipe'].reshape(3)
- 
-def _mat_scalar(name: str, default: float) -> float:
-    if name not in matdata:
-        print(
-            f"[weld_sim] MAT file has no '{name}', using default {default}. "
-            "Regenerate mat_files/weld_concert.mat with src/weld_opt.py to "
-            "store this value explicitly."
-        )
-        return float(default)
-    return float(matdata[name].reshape(-1)[0])
+DEFAULT_MAT_FILE = PATH_TO_ACEA_CONCERT / "mat_files" / "weld_concert.mat"
  
  
-PIPE_RADIUS = _mat_scalar('radius_pipe', 0.1)
-PIPE_TOTAL_LENGTH = _mat_scalar('length_pipe', 5.0)
-# The current MAT file has no pipe_gap. Default to a 1 cm visible junction for
-# Gazebo debugging; override with pipe_gap_m:=0.003 for the 3 mm target case.
-PIPE_GAP = _mat_scalar('pipe_gap', 0.01)
-PIPE_X = float(pipe_center[0])
-PIPE_Y = float(pipe_center[1])
-PIPE_Z = float(pipe_center[2])
- 
+def _mat_vector(data, name, default=None):
+    if name in data:
+        return np.asarray(data[name], dtype=float).reshape(-1)
+    if default is not None:
+        return np.asarray(default, dtype=float)
+    raise KeyError(f"MAT file is missing required field: {name}")
+
+
+def _mat_scalar(data, name, default):
+    if name in data:
+        return float(np.asarray(data[name], dtype=float).reshape(-1)[0])
+    return float(default)
+
+
+def _resolve_mat_file(raw_path: str) -> Path:
+    path = Path(os.path.expandvars(os.path.expanduser(raw_path)))
+    if not path.is_absolute():
+        path = PATH_TO_ACEA_CONCERT / path
+    return path
+
+
+def _load_mat_file(context):
+    mat_file = _resolve_mat_file(LaunchConfiguration("mat_file").perform(context))
+    if not mat_file.exists():
+        raise FileNotFoundError(f"File not found: {mat_file}")
+    return mat_file, loadmat(str(mat_file))
+
+
+def _optimized_gap_pose_from_mat(data):
+    robot_pose = _mat_vector(data, "initial_robot_pose")
+    if robot_pose.size < 7:
+        raise ValueError("initial_robot_pose must contain xyz + quaternion xyzw")
+
+    world_R_base = R.from_quat(robot_pose[3:7]).as_matrix()
+    if "pos_center_pipe_base" in data:
+        gap_base = _mat_vector(data, "pos_center_pipe_base")
+    else:
+        pipe_center_mat = _mat_vector(data, "pos_center_pipe")
+        gap_base = world_R_base.T @ (pipe_center_mat - robot_pose[:3])
+
+    world_R_gap = np.column_stack([
+        _mat_vector(data, "pipe_x_axis_world", [1.0, 0.0, 0.0]),
+        _mat_vector(data, "pipe_y_axis_world", [0.0, 1.0, 0.0]),
+        _mat_vector(data, "pipe_z_axis_world", [0.0, 0.0, 1.0]),
+    ])
+    base_R_gap = world_R_base.T @ world_R_gap
+    pipe_y_axis_yaw = math.atan2(
+        float(base_R_gap[1, 0]),
+        float(base_R_gap[0, 0]),
+    )
+    return float(gap_base[0]), float(gap_base[1]), pipe_y_axis_yaw
+
+
 PIPE_SDF_TEMPLATE = """<?xml version="1.0" ?>
 <sdf version="1.6">
   <model name="{name}">
@@ -91,49 +118,28 @@ PIPE_SDF_TEMPLATE = """<?xml version="1.0" ?>
     </link>
   </model>
 </sdf>"""
-GAP_MARKER_SDF_TEMPLATE = """<?xml version="1.0" ?>
-<sdf version="1.6">
-  <model name="weld_gap_black_filler">
-    <static>true</static>
-    <link name="gap_black_filler_link">
-      <visual name="gap_black_filler_visual">
-        <geometry>
-          <cylinder>
-            <radius>{radius}</radius>
-            <length>{length}</length>
-          </cylinder>
-        </geometry>
-        <material>
-          <ambient>0.0 0.0 0.0 1</ambient>
-          <diffuse>0.0 0.0 0.0 1</diffuse>
-          <specular>0.0 0.0 0.0 1</specular>
-        </material>
-      </visual>
-    </link>
-  </model>
-</sdf>"""
-BLACK_BACKDROP_SDF_TEMPLATE = """<?xml version="1.0" ?>
-<sdf version="1.6">
-  <model name="weld_gap_black_backdrop">
-    <static>true</static>
-    <link name="black_backdrop_link">
-      <visual name="black_backdrop_visual">
-        <geometry>
-          <box>
-            <size>{thickness_x} {length_y} {height_z}</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>0.0 0.0 0.0 1</ambient>
-          <diffuse>0.0 0.0 0.0 1</diffuse>
-          <specular>0.0 0.0 0.0 1</specular>
-          <emissive>0.0 0.0 0.0 1</emissive>
-        </material>
-      </visual>
-    </link>
-  </model>
-</sdf>"""
-# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _pipe_geometry_from_mat(data):
+    pipe_center = _mat_vector(data, "pos_center_pipe")
+    pipe_radius = _mat_scalar(data, "radius_pipe", 0.1)
+    pipe_total_length = _mat_scalar(data, "length_pipe", 5.0)
+    pipe_gap = _mat_scalar(data, "pipe_gap", 0.01)
+    pipe_half_length = max(0.01, (pipe_total_length - pipe_gap) / 2.0)
+    return {
+        "z": float(pipe_center[2]),
+        "half_center_offset": pipe_half_length / 2.0 + pipe_gap / 2.0,
+        "sdf_left": PIPE_SDF_TEMPLATE.format(
+            name="weld_pipe_left",
+            radius=pipe_radius,
+            length=pipe_half_length,
+        ),
+        "sdf_right": PIPE_SDF_TEMPLATE.format(
+            name="weld_pipe_right",
+            radius=pipe_radius,
+            length=pipe_half_length,
+        ),
+    }
  
  
 def _float_launch_config(context, name):
@@ -145,60 +151,30 @@ def _bool_launch_config(context, name):
  
  
 def _spawn_pipe_actions(context, *args, **kwargs):
-    pipe_offset_x = _float_launch_config(context, "pipe_offset_x")
-    pipe_offset_y = _float_launch_config(context, "pipe_offset_y")
-    pipe_y_axis_yaw = _float_launch_config(context, "pipe_y_axis_yaw")
-    pipe_radius = _float_launch_config(context, "pipe_radius_m")
-    pipe_total_length = _float_launch_config(context, "pipe_total_length_m")
-    pipe_gap = _float_launch_config(context, "pipe_gap_m")
-    pipe_z = _float_launch_config(context, "pipe_z_m")
-    gap_marker_width = _float_launch_config(context, "gap_visual_marker_width_m")
-    if gap_marker_width <= 0.0:
-        gap_marker_width = pipe_gap
-    spawn_gap_marker = _bool_launch_config(context, "spawn_gap_visual_marker")
-    spawn_black_backdrop = _bool_launch_config(context, "spawn_gap_black_backdrop")
-    backdrop_offset = _float_launch_config(context, "gap_black_backdrop_offset_m")
-    backdrop_length = _float_launch_config(context, "gap_black_backdrop_length_m")
-    backdrop_height = _float_launch_config(context, "gap_black_backdrop_height_m")
-    pipe_half_length = max(0.01, (pipe_total_length - pipe_gap) / 2.0)
-    pipe_half_center_offset = pipe_half_length / 2.0 + pipe_gap / 2.0
-    pipe_sdf_left = PIPE_SDF_TEMPLATE.format(
-        name="weld_pipe_left",
-        radius=pipe_radius,
-        length=pipe_half_length,
-    )
-    pipe_sdf_right = PIPE_SDF_TEMPLATE.format(
-        name="weld_pipe_right",
-        radius=pipe_radius,
-        length=pipe_half_length,
-    )
-    gap_marker_sdf = GAP_MARKER_SDF_TEMPLATE.format(
-        radius=pipe_radius + 0.001,
-        length=max(0.002, gap_marker_width),
-    )
-    black_backdrop_sdf = BLACK_BACKDROP_SDF_TEMPLATE.format(
-        thickness_x=0.025,
-        length_y=max(pipe_total_length + 1.0, backdrop_length),
-        height_z=max(3.0 * pipe_radius, backdrop_height),
-    )
-    # The sim robot is spawned at world XY = 0. Express the optimized pipe
-    # position in this nominal robot-start frame.
-    nominal_robot_x = PIPE_X - pipe_offset_x
-    nominal_robot_y = PIPE_Y - pipe_offset_y
-    pipe_spawn_x = PIPE_X - nominal_robot_x
-    pipe_spawn_y = PIPE_Y - nominal_robot_y
+    mat_file, selected_matdata = _load_mat_file(context)
+    pipe = _pipe_geometry_from_mat(selected_matdata)
+
+    if _bool_launch_config(context, "optimized_robot_pose"):
+        pipe_spawn_x, pipe_spawn_y, pipe_y_axis_yaw = (
+            _optimized_gap_pose_from_mat(selected_matdata))
+        print(
+            "[weld_sim] Starting at optimized relative gap pose from "
+            f"{mat_file}: x={pipe_spawn_x:.3f}, y={pipe_spawn_y:.3f}, "
+            f"yaw={pipe_y_axis_yaw:.3f}"
+        )
+    else:
+        pipe_spawn_x = _float_launch_config(context, "pipe_offset_x")
+        pipe_spawn_y = _float_launch_config(context, "pipe_offset_y")
+        pipe_y_axis_yaw = _float_launch_config(context, "pipe_y_axis_yaw")
+
     pipe_y_axis = (
         -math.sin(pipe_y_axis_yaw),
         math.cos(pipe_y_axis_yaw),
     )
-    pipe_back_axis = (
-        math.cos(pipe_y_axis_yaw),
-        math.sin(pipe_y_axis_yaw),
-    )
-    pipe_offset_x = pipe_half_center_offset * pipe_y_axis[0]
-    pipe_offset_y = pipe_half_center_offset * pipe_y_axis[1]
+    pipe_offset_x = pipe["half_center_offset"] * pipe_y_axis[0]
+    pipe_offset_y = pipe["half_center_offset"] * pipe_y_axis[1]
  
-    actions = [
+    return [
         # Spawn two pipe halves with a small gap. With the default nominal frame
         # the robot starts centered 2 m from the pipe. pipe_y_axis_yaw rotates
         # the whole pipe/gap frame around vertical Z.
@@ -210,10 +186,10 @@ def _spawn_pipe_actions(context, *args, **kwargs):
                     executable="create",
                     name="spawn_weld_pipe_left",
                     arguments=[
-                        "-string", pipe_sdf_left,
+                        "-string", pipe["sdf_left"],
                         "-x", f"{pipe_spawn_x + pipe_offset_x:.6f}",
                         "-y", f"{pipe_spawn_y + pipe_offset_y:.6f}",
-                        "-z", f"{pipe_z:.6f}",
+                        "-z", f"{pipe['z']:.6f}",
                         "-R", "1.5708",
                         "-P", "0.0",
                         "-Y", f"{pipe_y_axis_yaw:.6f}",
@@ -230,10 +206,10 @@ def _spawn_pipe_actions(context, *args, **kwargs):
                     executable="create",
                     name="spawn_weld_pipe_right",
                     arguments=[
-                        "-string", pipe_sdf_right,
+                        "-string", pipe["sdf_right"],
                         "-x", f"{pipe_spawn_x - pipe_offset_x:.6f}",
                         "-y", f"{pipe_spawn_y - pipe_offset_y:.6f}",
-                        "-z", f"{pipe_z:.6f}",
+                        "-z", f"{pipe['z']:.6f}",
                         "-R", "1.5708",
                         "-P", "0.0",
                         "-Y", f"{pipe_y_axis_yaw:.6f}",
@@ -243,53 +219,6 @@ def _spawn_pipe_actions(context, *args, **kwargs):
             ],
         ),
     ]
-    if spawn_black_backdrop:
-        actions.append(
-            TimerAction(
-                period=2.05,
-                actions=[
-                    Node(
-                        package="ros_gz_sim",
-                        executable="create",
-                        name="spawn_weld_gap_black_backdrop",
-                        arguments=[
-                            "-string", black_backdrop_sdf,
-                            "-x", f"{pipe_spawn_x + (pipe_radius + backdrop_offset) * pipe_back_axis[0]:.6f}",
-                            "-y", f"{pipe_spawn_y + (pipe_radius + backdrop_offset) * pipe_back_axis[1]:.6f}",
-                            "-z", f"{pipe_z:.6f}",
-                            "-R", "0.0",
-                            "-P", "0.0",
-                            "-Y", f"{pipe_y_axis_yaw:.6f}",
-                        ],
-                        output="screen",
-                    ),
-                ],
-            )
-        )
-    if spawn_gap_marker:
-        actions.append(
-            TimerAction(
-                period=2.1,
-                actions=[
-                    Node(
-                        package="ros_gz_sim",
-                        executable="create",
-                        name="spawn_weld_gap_visual_marker",
-                        arguments=[
-                            "-string", gap_marker_sdf,
-                            "-x", f"{pipe_spawn_x:.6f}",
-                            "-y", f"{pipe_spawn_y:.6f}",
-                            "-z", f"{pipe_z:.6f}",
-                            "-R", "1.5708",
-                            "-P", "0.0",
-                            "-Y", f"{pipe_y_axis_yaw:.6f}",
-                        ],
-                        output="screen",
-                    ),
-                ],
-            )
-        )
-    return actions
  
  
 def generate_launch_description():
@@ -320,11 +249,6 @@ def generate_launch_description():
         gazebo_world_file,
         "'",
     ])
-    prismatic_joint_arg = PythonExpression([
-        "' --use-prismatic-joint' if '",
-        LaunchConfiguration("use_prismatic_joint"),
-        "' == 'true' else ''",
-    ])
     modular_description = PythonExpression([
         "'",
         MODULAR_DESCRIPTION,
@@ -335,7 +259,7 @@ def generate_launch_description():
         "'",
     ])
     robot_description_tf = Command([
-        'python3', ' ', MODULAR_DESCRIPTION, prismatic_joint_arg,
+        'python3 ', modular_description,
         ' -o urdf -a gazebo_urdf:=false floating_base:=true',
         ' realsense:=', LaunchConfiguration('realsense'),
         ' velodyne:=', LaunchConfiguration('velodyne'),
@@ -386,32 +310,16 @@ def generate_launch_description():
         DeclareLaunchArgument("rviz",      default_value="false", description="Launch RViz"),
         DeclareLaunchArgument("realsense", default_value="true", description="Include RealSense"),
         DeclareLaunchArgument("velodyne",  default_value="false", description="Include Velodyne"),
+        DeclareLaunchArgument("mat_file", default_value=str(DEFAULT_MAT_FILE),
+                              description="Optimization MAT file used for optimized_robot_pose"),
+        DeclareLaunchArgument("optimized_robot_pose", default_value="false",
+                              description="Place the gap at the optimized pose relative to the robot from mat_file"),
         DeclareLaunchArgument("use_prismatic_joint", default_value="false",
                               description="Use the prismatic cart block instead of the first yaw joint in concert_with_torch.py"),
         DeclareLaunchArgument("start_front_camera_bridges", default_value="true",
                               description="Start explicit ros_gz_bridge GZ->ROS bridges for the front D435i RGB/depth/camera_info topics"),
         DeclareLaunchArgument("publish_robot_state_tf", default_value="false",
                               description="Fallback-only: publish URDF fixed transforms if the main robot launch does not already provide base_link -> D435i camera frames"),
-        DeclareLaunchArgument("pipe_radius_m", default_value=str(PIPE_RADIUS),
-                              description="Pipe radius used for the spawned debug pipe [m]"),
-        DeclareLaunchArgument("pipe_total_length_m", default_value=str(PIPE_TOTAL_LENGTH),
-                              description="Total pipe length before splitting around the gap [m]"),
-        DeclareLaunchArgument("pipe_gap_m", default_value=str(PIPE_GAP),
-                              description="Visible gap between the two spawned pipe halves [m]"),
-        DeclareLaunchArgument("pipe_z_m", default_value=str(PIPE_Z),
-                              description="Pipe/gap center height used for the spawned debug pipe [m]"),
-        DeclareLaunchArgument("spawn_gap_visual_marker", default_value="true",
-                              description="Spawn a short black cylindrical mini-pipe inside the junction for RGB detector smoke tests"),
-        DeclareLaunchArgument("gap_visual_marker_width_m", default_value="-1.0",
-                              description="Length of the black junction filler along the pipe axis [m]; <=0 follows pipe_gap_m"),
-        DeclareLaunchArgument("spawn_gap_black_backdrop", default_value="false",
-                              description="Spawn a large black panel behind the pipe so the real gap appears dark in RGB"),
-        DeclareLaunchArgument("gap_black_backdrop_offset_m", default_value="0.35",
-                              description="Distance from the back pipe surface to the black backdrop [m]"),
-        DeclareLaunchArgument("gap_black_backdrop_length_m", default_value="7.0",
-                              description="Minimum black backdrop length along the pipe axis [m]"),
-        DeclareLaunchArgument("gap_black_backdrop_height_m", default_value="2.0",
-                              description="Minimum black backdrop height [m]"),
         DeclareLaunchArgument("pipe_offset_x", default_value="2.0",
                               description="Pipe center X in the robot nominal start frame [m]"),
         DeclareLaunchArgument("pipe_offset_y", default_value="0.0",

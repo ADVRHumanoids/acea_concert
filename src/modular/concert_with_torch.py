@@ -11,6 +11,12 @@ is_floating_base = True
 WELD_TORCH_CAMERA_NAME = "camera_F"
 WELD_TORCH_CAMERA_XYZ = [0.1, 0.0, -0.05]
 WELD_TORCH_CAMERA_RPY = [3.141593, -1.4, 0.0]  # 180 deg roll keeps the view direction, flips camera upright
+WELD_TORCH_EE_POSE = [
+    [0.4975711, 0.0, -0.8674232, -0.02],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.8674232, 0.0, 0.4975711, 0.2715 - 0.02184],
+    [0, 0, 0, 1],
+]
 
 
 def parse_local_args():
@@ -116,6 +122,9 @@ with suppress_stdout():
     prismatic_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['p'] = 5000.0
     prismatic_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['d'] = 80.0
 
+    weld_torch_dict = urdf_writer.modular_resources_manager.available_modules_dict['experimental/module_weld_torch_dummy.json']
+    # weld_torch_dict['bodies'][0]['connectors'][1]['pose'] = WELD_TORCH_EE_POSE
+
     if args.use_prismatic_joint:
         data = urdf_writer.add_module('experimental/module_joint_yaw_XL_concert.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0})
         homing_joint_map[str(data['name'])] = -3.14159265 / 2
@@ -160,8 +169,9 @@ with suppress_stdout():
     if args.use_prismatic_joint:
         data = urdf_writer.add_module('experimental/module_weld_torch_dummy.json')
     else:
-        data = urdf_writer.add_module('experimental/module_weld_torch_dummy.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 3.14159265})
-    add_weld_torch_camera(urdf_writer)
+        data = urdf_writer.add_module('experimental/module_weld_torch_dummy.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.07966, 'roll': 0.0, 'pitch': 0.0, 'yaw': -1.5707963267948966})
+    
+    # add_weld_torch_camera(urdf_writer)
 
     # # Right mounted interface
     # data = urdf_writer.select_module_from_name('hub_prismatic_cart_con2')

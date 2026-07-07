@@ -1,4 +1,6 @@
 import argparse
+from dataclasses import replace
+import os
 
 from horizon.problem import Problem
 from horizon.rhc.model_description import FullModelInverseDynamics
@@ -37,12 +39,26 @@ def parse_args():
         action="store_true",
         help="Generate the prismatic-cart robot model for optimization.",
     )
+    parser.add_argument(
+        "--upside-down",
+        dest="upside_down",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Weld with the torch upside down. Overrides the "
+            "WELD_OPT_WELD_UPSIDE_DOWN environment variable / batch scenario "
+            "setting when passed explicitly (use --no-upside-down to force "
+            "it off)."
+        ),
+    )
     return parser.parse_args()
 
 
 args = parse_args()
 runtime = weld_opt_runtime_from_env()
 scenario = weld_scenario_from_env()
+if args.upside_down is not None:
+    scenario = replace(scenario, upside_down=args.upside_down)
 if runtime.seed is not None:
     np.random.seed(runtime.seed)
 
@@ -104,14 +120,14 @@ footprint_robot_y = 0.7
 
 length_pipe = 5.0
 pipe_gap = 0.005
-pos_center_pipe = [1.5, 0.0, 0.587]
+pos_center_pipe = [1.5, 0.0, 0.587 + 0.45]
 orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
 radius_pipe = 0.1 # 0.15, 0.25, 0.35 available
 
 OPTIMIZE_PIPE_HEIGHT = False
 margin_around_pipe_height = 1.0 # how much the pipe height can be optimized around the nominal height (in both directions)
 pipe_z_bounds = (pos_center_pipe[2] - margin_around_pipe_height, pos_center_pipe[2] + margin_around_pipe_height)
-MINIMIZE_CRITICAL_JOINT_TORQUES = True
+MINIMIZE_CRITICAL_JOINT_TORQUES = False
 TORQUE_COST_WEIGHT = 1e-1
 CRITICAL_TORQUE_JOINTS = ('J1_E', 'J2_E', 'J1_F', 'J2_F', 'J3_F', 'J4_F', 'J5_F', 'J6_F')
 
@@ -126,7 +142,16 @@ if weld_trajectory_radius <= 0.0:
 trajectory_scenario_name = scenario.name
 angle_weld_start = scenario.angle_start
 angle_weld_end = scenario.angle_end
-weld_upside_down = scenario.upside_down
+
+# Manual default: edit this directly to weld upside down when running
+# weld_opt.py by hand. Automatically overridden by run_weld_opt_batch.py
+# through the WELD_OPT_WELD_UPSIDE_DOWN env var, or by passing
+# --upside-down / --no-upside-down on the command line.
+weld_upside_down = False
+if args.upside_down is not None:
+    weld_upside_down = args.upside_down
+elif 'WELD_OPT_WELD_UPSIDE_DOWN' in os.environ:
+    weld_upside_down = scenario.upside_down
 
 margin_x = 0. # Some margin around the pipe w.r.t. the initial robot position (the robot cannot start too close to the pipe)
 bound_initial_pos_x_low = -0.5 # 0 is good!

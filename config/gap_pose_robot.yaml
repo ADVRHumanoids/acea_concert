@@ -27,12 +27,31 @@
     static_cam_to_base_quat_xyzw: [0.0, 0.0, 0.0, 1.0]
 
     # Sign disambiguation of the perceived axis / radial vs the GT convention.
-    # Flip to -1.0 if the published frame points the opposite way (verify live).
+    # The cylinder fit has no intrinsic +axis direction: +axis and -axis are the
+    # same pipe, but they are different /gap/pose_robot quaternions. Keep the
+    # published frame canonical in base_link by aligning it to the same nominal
+    # directions used by the Gazebo ground-truth gap_pose_publisher.py:
+    #   +Y = pipe/gap axis, +X = radial weld direction.
+    # Set use_reference_sign_canonicalization:=false or set a reference to
+    # [0, 0, 0] if a different fixture intentionally uses another convention.
     axis_sign: 1.0
     radial_sign: 1.0
+    use_reference_sign_canonicalization: true
+    axis_reference_target_xyz: [0.0, 1.0, 0.0]
+    radial_reference_target_xyz: [1.0, 0.0, 0.0]
+    use_temporal_sign_continuity: true
 
     require_pose_valid: true
     require_metric_3d: true
     reject_assumed_depth: true
+
+    # Optional visual/debug convenience only. Keep this false for controller
+    # tests by default: republishing stale poses can hide detector dropouts and
+    # make the robot consume an old gap pose. Enable explicitly only when a
+    # bounded hold is acceptable for the experiment.
+    hold_last_pose: false
+    hold_publish_rate_hz: 20.0
+    hold_max_age_s: 2.5
+
     broadcast_tf: false
     gap_tf_child_frame: gap_seam

@@ -1,14 +1,22 @@
 /**:
   ros__parameters:
-    # v8-complete default: color-agnostic pipe tracking, but keep all cylinder
-    # safety gates enabled. Do not set the four gates below to false as a sim
-    # workaround: that makes the detector accept non-cylindrical masks and can
-    # publish fake junctions/poses.
+    # Simulation v8-complete preset. Also color-agnostic: the sim pipe may be
+    # grey and textureless, so do not rely on warm/orange pixels. Keep cylinder
+    # validation required; only loosen metric thresholds that are sensitive to
+    # idealized Gazebo depth/rasterization.
     pipe_color_prior_enabled: false
     pipe_component_require_valid_cylinder: true
     junction_require_cylinder_mask: true
     pipe_lock_require_fit_model: true
     pipe_coloroff_cylinder_guard_enabled: true
+
+    # Sim depth is clean but the rendered/visible arc can be smaller than the
+    # real handheld bag; allow the cylinder candidate to be accepted with fewer
+    # sampled inliers while preserving the cylinder model requirement.
+    cylinder_component_min_inliers: 120
+    cylinder_component_min_inlier_fraction: 0.12
+    pipe_tracking_component_min_inliers: 80
+    pipe_tracking_component_min_inlier_fraction: 0.08
 
     publish_pipe_debug_masks: true
     visual_pipe_mask_topic: /acea/pipe_junction/debug/visual_pipe_mask

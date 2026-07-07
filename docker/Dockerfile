@@ -9,7 +9,9 @@ RUN echo "source /opt/xbot/setup.sh" >> ~/.bashrc
 RUN echo "source ~/concert_ws/setup.bash" >> ~/.bashrc
 
 RUN sudo apt-get update && sudo apt-get install -y \
-    swig python3-future ros-jazzy-pinocchio \
+    swig \
+    python3-future \
+    ros-jazzy-pinocchio \
     && sudo rm -rf /var/lib/apt/lists/*
 
 RUN python3 -m pip install --break-system-packages anytree

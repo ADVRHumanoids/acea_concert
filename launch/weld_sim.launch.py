@@ -440,5 +440,3 @@ def generate_launch_description():
  
         OpaqueFunction(function=_spawn_pipe_actions),
     ])
- 
- 

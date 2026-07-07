@@ -35,6 +35,7 @@ Run the geometry self-test (no ROS needed):
 """
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import sys
 from pathlib import Path
@@ -156,6 +157,57 @@ def gap_frame_from_axis_and_radial(axis: np.ndarray, radial: np.ndarray):
     return R, rotation_matrix_to_quaternion_xyzw(R)
 
 
+def _reference_vector_or_none(value) -> np.ndarray | None:
+    vec = _vector3_or_none(value)
+    if vec is None:
+        return None
+    return _unit(vec)
+
+
+def _canonicalize_axis_and_radial(
+    axis: np.ndarray,
+    radial: np.ndarray,
+    axis_reference: np.ndarray | None,
+    radial_reference: np.ndarray | None,
+    previous_axis: np.ndarray | None = None,
+    previous_radial: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, dict[str, bool]]:
+    """Resolve the cylinder sign ambiguity before building /gap/pose_robot.
+
+    A fitted cylinder has no intrinsic +axis direction: ``axis`` and ``-axis``
+    describe the same pipe. The controller, however, expects the historical
+    Gazebo gap frame where +Y has a fixed meaning. First align to configured
+    reference directions in the target frame; if a reference is disabled, keep
+    temporal continuity with the last published axes.
+    """
+    a = np.asarray(axis, dtype=np.float64).reshape(3).copy()
+    r = np.asarray(radial, dtype=np.float64).reshape(3).copy()
+    flipped = {"axis_flipped": False, "radial_flipped": False}
+
+    a_unit = _unit(a)
+    if a_unit is None:
+        return a, r, flipped
+
+    axis_ref = axis_reference if axis_reference is not None else previous_axis
+    if axis_ref is not None and float(np.dot(a_unit, axis_ref)) < 0.0:
+        a = -a
+        a_unit = -a_unit
+        flipped["axis_flipped"] = True
+
+    # Radial sign is meaningful only after removing the axis component.
+    r_proj = r - float(np.dot(r, a_unit)) * a_unit
+    r_unit = _unit(r_proj)
+    radial_ref = radial_reference if radial_reference is not None else previous_radial
+    if r_unit is not None and radial_ref is not None:
+        ref_proj = radial_ref - float(np.dot(radial_ref, a_unit)) * a_unit
+        ref_unit = _unit(ref_proj)
+        if ref_unit is not None and float(np.dot(r_unit, ref_unit)) < 0.0:
+            r = -r
+            flipped["radial_flipped"] = True
+
+    return a, r, flipped
+
+
 def _selftest() -> int:
     """Validate the gap-frame convention without ROS. Returns 0 on success."""
     checks: list[tuple[str, bool]] = []
@@ -183,6 +235,20 @@ def _selftest() -> int:
 
     # quat -> R round trip matches.
     checks.append(("quat<->R round trip", np.allclose(_quat_xyzw_to_R(q), R, atol=1e-9)))
+
+    # A cylinder fit can return the same physical pipe with both signs flipped.
+    # References canonicalize it back to the Gazebo contract (+Y axis, +X radial).
+    axis_c, radial_c, info = _canonicalize_axis_and_radial(
+        np.array([0.0, -1.0, 0.0]),
+        np.array([-1.0, 0.0, 0.0]),
+        np.array([0.0, 1.0, 0.0]),
+        np.array([1.0, 0.0, 0.0]),
+    )
+    out = gap_frame_from_axis_and_radial(axis_c, radial_c)
+    assert out is not None
+    R, _ = out
+    checks.append(("reference canonicalizes flipped cylinder signs", np.allclose(R, np.eye(3), atol=1e-9)))
+    checks.append(("canonicalization reports both flips", info["axis_flipped"] and info["radial_flipped"]))
 
     ok = True
     for name, passed in checks:
@@ -239,15 +305,32 @@ def _build_node_class():
                 p("static_cam_to_base_quat_xyzw", [0.0, 0.0, 0.0, 1.0]).value, dtype=np.float64)
             self.axis_sign = float(p("axis_sign", 1.0).value)
             self.radial_sign = float(p("radial_sign", 1.0).value)
+            self.axis_reference_target_xyz = _reference_vector_or_none(
+                p("axis_reference_target_xyz", [0.0, 1.0, 0.0]).value)
+            self.radial_reference_target_xyz = _reference_vector_or_none(
+                p("radial_reference_target_xyz", [1.0, 0.0, 0.0]).value)
+            self.use_reference_sign_canonicalization = bool(
+                p("use_reference_sign_canonicalization", True).value)
+            self.use_temporal_sign_continuity = bool(
+                p("use_temporal_sign_continuity", True).value)
             self.require_pose_valid = bool(p("require_pose_valid", True).value)
             self.require_metric_3d = bool(p("require_metric_3d", True).value)
             self.reject_assumed_depth = bool(p("reject_assumed_depth", True).value)
             self.broadcast_tf = bool(p("broadcast_tf", False).value)
             self.gap_tf_child_frame = p("gap_tf_child_frame", "gap_seam").value
+            self.hold_last_pose = bool(p("hold_last_pose", False).value)
+            self.hold_publish_rate_hz = float(p("hold_publish_rate_hz", 20.0).value)
+            self.hold_max_age_s = float(p("hold_max_age_s", 2.0).value)
 
             self._warned_fallback = False
             self._warned_no_transform = False
             self._warned_identity_fallback = False
+            self._last_pose_msg = None
+            self._last_matrix_data = None
+            self._last_tf_msg = None
+            self._last_pose_time_ns = None
+            self._last_axis_b = None
+            self._last_radial_b = None
             self.tf_buffer = tf2_ros.Buffer()
             self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
             self.tf_broadcaster = tf2_ros.TransformBroadcaster(self) if self.broadcast_tf else None
@@ -260,12 +343,15 @@ def _build_node_class():
 
             # Monitor for duplicates the file lock cannot see (another container/host).
             self.create_timer(5.0, self._check_duplicate_graph)
+            if self.hold_last_pose and self.hold_publish_rate_hz > 0.0:
+                self.create_timer(1.0 / self.hold_publish_rate_hz, self._republish_last_pose)
 
             self.get_logger().info(
                 f"gap_pose_robot [{self.instance_id}]: {self.input_topic} (camera frame) -> "
                 f"{self.output_pose_topic} (frame {self.target_frame}); "
                 f"tf={'on' if self.use_tf else 'off'}, "
-                f"static_fallback={'on' if self.static_fallback_enabled else 'off'}")
+                f"static_fallback={'on' if self.static_fallback_enabled else 'off'}, "
+                f"hold_last_pose={'on' if self.hold_last_pose else 'off'}")
 
         def _check_duplicate_graph(self) -> None:
             if count_named_nodes(self) > 1:
@@ -274,6 +360,37 @@ def _build_node_class():
                     f"(this one: {self.instance_id}) — they publish a conflicting "
                     f"{self.output_pose_topic}. Keep exactly one bridge running.",
                     throttle_duration_sec=10.0)
+
+        def _remember_last_pose(self, pose, matrix_data, tf_msg) -> None:
+            if not self.hold_last_pose:
+                return
+            self._last_pose_msg = deepcopy(pose)
+            self._last_matrix_data = None if matrix_data is None else list(matrix_data)
+            self._last_tf_msg = None if tf_msg is None else deepcopy(tf_msg)
+            self._last_pose_time_ns = int(self.get_clock().now().nanoseconds)
+
+        def _republish_last_pose(self) -> None:
+            if not self.hold_last_pose or self._last_pose_msg is None or self._last_pose_time_ns is None:
+                return
+            now = self.get_clock().now()
+            age_s = 1e-9 * float(int(now.nanoseconds) - int(self._last_pose_time_ns))
+            if age_s > max(0.0, self.hold_max_age_s):
+                return
+
+            stamp = now.to_msg()
+            pose = deepcopy(self._last_pose_msg)
+            pose.header.stamp = stamp
+            self.pose_pub.publish(pose)
+
+            if self.matrix_pub is not None and self._last_matrix_data is not None:
+                arr = Float64MultiArray()
+                arr.data = list(self._last_matrix_data)
+                self.matrix_pub.publish(arr)
+
+            if self.tf_broadcaster is not None and self._last_tf_msg is not None:
+                tf_msg = deepcopy(self._last_tf_msg)
+                tf_msg.header.stamp = stamp
+                self.tf_broadcaster.sendTransform(tf_msg)
 
         # -- camera -> target transform ---------------------------------------
         def _resolve_transform(self, camera_frame: str):
@@ -357,6 +474,17 @@ def _build_node_class():
             radial_b = self.radial_sign * (R_bc @ radial)
             center_b = R_bc @ center + t_bc
 
+            axis_ref = (
+                self.axis_reference_target_xyz
+                if self.use_reference_sign_canonicalization else None)
+            radial_ref = (
+                self.radial_reference_target_xyz
+                if self.use_reference_sign_canonicalization else None)
+            previous_axis = self._last_axis_b if self.use_temporal_sign_continuity else None
+            previous_radial = self._last_radial_b if self.use_temporal_sign_continuity else None
+            axis_b, radial_b, _flip_info = _canonicalize_axis_and_radial(
+                axis_b, radial_b, axis_ref, radial_ref, previous_axis, previous_radial)
+
             frame = gap_frame_from_axis_and_radial(axis_b, radial_b)
             if frame is None:
                 self.get_logger().warn("degenerate gap frame; skipping", throttle_duration_sec=2.0)
@@ -376,6 +504,7 @@ def _build_node_class():
             pose.pose.orientation.w = float(quat[3])
             self.pose_pub.publish(pose)
 
+            matrix_data = None
             if self.matrix_pub is not None:
                 T = np.eye(4)
                 T[:3, :3] = R_gap
@@ -383,7 +512,9 @@ def _build_node_class():
                 arr = Float64MultiArray()
                 arr.data = [float(v) for v in T.reshape(-1)]
                 self.matrix_pub.publish(arr)
+                matrix_data = arr.data
 
+            tf_msg = None
             if self.tf_broadcaster is not None:
                 tf_msg = TransformStamped()
                 tf_msg.header.stamp = stamp
@@ -397,6 +528,13 @@ def _build_node_class():
                 tf_msg.transform.rotation.z = float(quat[2])
                 tf_msg.transform.rotation.w = float(quat[3])
                 self.tf_broadcaster.sendTransform(tf_msg)
+
+            self._remember_last_pose(pose, matrix_data, tf_msg)
+            self._last_axis_b = _unit(axis_b)
+            y = self._last_axis_b
+            if y is not None:
+                radial_proj = radial_b - float(np.dot(radial_b, y)) * y
+                self._last_radial_b = _unit(radial_proj)
 
     return GapPoseRobotNode
 

@@ -4,7 +4,7 @@ CartesIO-based end-effector controller for the CONCERT welding robot.
 Architecture:
   - RobotInterface2 senses the robot state and sends joint position references.
   - A standalone CartesianInterface (OpenSot) runs the IK locally each tick.
-  - URDF/SRDF are read from robot_description_publisher ROS parameters.
+  - URDF/SRDF are read from XBot's transient-local description topics.
 
 Usage (simulation must already be running and homing already completed):
     ros2 launch acea_concert weld_sim.launch.py
@@ -207,8 +207,8 @@ weld_gap_trajectory = CyclicVectorTrajectory(weld_pos_traj_gap, trj_dt) # desire
 weld_gap_orientation = CyclicQuaternionTrajectory(weld_quat_traj_gap, trj_dt) # desired EE orientation expressed in the gap frame
 print("[controller] Trajectory interpolator ready.")
 
-# ── Read URDF/SRDF from robot_description_publisher ───────────────────────────
-print("[controller] Waiting for robot_description ROS parameters …")
+# ── Read URDF/SRDF ───────────────────────────────────────────────────────────
+print("[controller] Waiting for robot description …")
 controller_ros = ControllerRosInterface(
     GAIN_PARAM_DEFAULTS,
     gap_pose_filter_tau_s=args.gap_filter_tau,

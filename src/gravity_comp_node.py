@@ -38,11 +38,10 @@ class GravityCompNode(Node):
     def __init__(self):
         super().__init__('gravity_comp_node')
 
-        # ── Read URDF/SRDF from robot_description_publisher ───────────────────────────
-        print("[controller] Waiting for robot_description ROS parameters …")
+        print("[gravity_comp] Waiting for robot description …")
 
         urdf, srdf = fetch_robot_description('gravity_comp_urdf_reader')
-        print("[controller] URDF and SRDF received.")
+        print("[gravity_comp] URDF and SRDF received.")
 
         # ── Build ConfigOptions for RobotInterface2 ───────────────────────────────────
         cfg = xbi.ConfigOptions()

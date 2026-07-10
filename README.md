@@ -83,6 +83,35 @@ rviz2 -d rviz/rviz_config.rviz
 
 ## 2. Online Controller
 
+Start the standalone container with its default isolated Docker network:
+
+```bash
+docker compose -f docker/compose.yaml up -d
+```
+
+To communicate with ROS 2 outside the container, set the required host IP and
+use the ROS launcher:
+
+```bash
+ROS2_IP=<host-IP-on-the-robot-network> ROS_DOMAIN_ID=0 docker/up-ros
+```
+
+The external ROS 2 machine must use the same `ROS_DOMAIN_ID` and
+`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`.
+
+Shut down either mode without setting `ROS2_IP`:
+
+```bash
+# Standalone
+docker compose -f docker/compose.yaml down
+
+# External ROS networking
+docker compose \
+  -f docker/compose.yaml \
+  -f docker/compose.ros.yaml \
+  down
+```
+
 Start each component in a separate terminal.
 
 Run in this order:

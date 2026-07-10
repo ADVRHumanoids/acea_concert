@@ -120,16 +120,17 @@ footprint_robot_y = 0.7
 
 length_pipe = 5.0
 pipe_gap = 0.005
-pos_center_pipe = [1.5, 0.0, 0.587 + 0.45]
+pos_center_pipe = [1.5, 0.0, 0.587 + 0.45 + 0.3 + 0.03]  # nominal pipe center position in world frame
 orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
 radius_pipe = 0.1 # 0.15, 0.25, 0.35 available
 
 OPTIMIZE_PIPE_HEIGHT = False
 margin_around_pipe_height = 1.0 # how much the pipe height can be optimized around the nominal height (in both directions)
 pipe_z_bounds = (pos_center_pipe[2] - margin_around_pipe_height, pos_center_pipe[2] + margin_around_pipe_height)
-MINIMIZE_CRITICAL_JOINT_TORQUES = False
-TORQUE_COST_WEIGHT = 1e-1
-CRITICAL_TORQUE_JOINTS = ('J1_E', 'J2_E', 'J1_F', 'J2_F', 'J3_F', 'J4_F', 'J5_F', 'J6_F')
+MINIMIZE_CRITICAL_JOINT_TORQUES = True
+TORQUE_COST_WEIGHT = 2e-1
+# CRITICAL_TORQUE_JOINTS = ('J1_E', 'J2_E', 'J1_F', 'J2_F', 'J3_F', 'J4_F', 'J5_F', 'J6_F')
+CRITICAL_TORQUE_JOINTS = ('J2_E', 'J4_E')
 
 weld_standoff_from_pipe = 0.02  # EE path distance from pipe surface [m]
 weld_trajectory_radius = radius_pipe + weld_standoff_from_pipe
@@ -153,7 +154,7 @@ if args.upside_down is not None:
 elif 'WELD_OPT_WELD_UPSIDE_DOWN' in os.environ:
     weld_upside_down = scenario.upside_down
 
-margin_x = 0. # Some margin around the pipe w.r.t. the initial robot position (the robot cannot start too close to the pipe)
+margin_x = 0.5 # Some margin around the pipe w.r.t. the initial robot position (the robot cannot start too close to the pipe)
 bound_initial_pos_x_low = -0.5 # 0 is good!
 bound_initial_pos_x_high = pos_center_pipe[0] - radius_pipe - footprint_robot_x/2 - margin_x 
 

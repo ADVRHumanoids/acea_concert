@@ -12,7 +12,7 @@ import rclpy
 from rcl_interfaces.srv import GetParameters
 from rclpy.utilities import remove_ros_args
 from scipy.io import loadmat
-
+from controller_ros import fetch_robot_description
 from xbot2_interface import pyxbot2_interface as xbi
 
 
@@ -39,29 +39,90 @@ def ee_link_from_urdf(urdf: str):
     raise RuntimeError("Neither ee_F nor ee_E exists in the URDF.")
 
 
-def fetch_robot_description(node_name: str):
-    if not rclpy.ok():
-        rclpy.init()
+# def fetch_robot_description(node_name: str):
+#     if not rclpy.ok():
+#         rclpy.init()
 
-    node = rclpy.create_node(node_name)
-    client = node.create_client(
-        GetParameters, "/robot_description_publisher/get_parameters")
-    if not client.wait_for_service(timeout_sec=15.0):
-        node.destroy_node()
-        raise RuntimeError(
-            "/robot_description_publisher not available. Is the simulation running?")
+#     node = rclpy.create_node(node_name)
 
-    req = GetParameters.Request()
-    req.names = ["robot_description", "robot_description_semantic"]
-    future = client.call_async(req)
-    rclpy.spin_until_future_complete(node, future, timeout_sec=15.0)
-    node.destroy_node()
+#     robot_description = None
+#     robot_description_semantic = None
 
-    if future.result() is None:
-        raise RuntimeError("Failed to read robot_description parameters.")
+#     def robot_description_callback(msg):
+#         nonlocal robot_description
+#         robot_description = msg.data
 
-    vals = future.result().values
-    return vals[0].string_value, vals[1].string_value
+#     def robot_description_semantic_callback(msg):
+#         nonlocal robot_description_semantic
+#         robot_description_semantic = msg.data
+
+#     qos = QoSProfile(
+#         depth=1,
+#         durability=DurabilityPolicy.TRANSIENT_LOCAL,
+#         reliability=ReliabilityPolicy.RELIABLE,
+#     )
+
+#     node.create_subscription(
+#         String,
+#         "/xbotcore/robot_description",
+#         robot_description_callback,
+#         qos,
+#     )
+
+#     node.create_subscription(
+#         String,
+#         "/xbotcore/robot_description_semantic",
+#         robot_description_semantic_callback,
+#         qos,
+#     )
+
+#     timeout = 15.0
+#     start_time = node.get_clock().now()
+
+#     while rclpy.ok():
+#         rclpy.spin_once(node, timeout_sec=0.1)
+
+#         elapsed = (
+#             node.get_clock().now() - start_time
+#         ).nanoseconds / 1e9
+
+#         if robot_description is not None and robot_description_semantic is not None:
+#             break
+
+#         if elapsed > timeout:
+#             node.destroy_node()
+#             raise RuntimeError(
+#                 "Failed to receive robot description topics. "
+#                 "Check QoS compatibility and that /xbotcore is running."
+#             )
+
+#     node.destroy_node()
+
+#     return robot_description, robot_description_semantic
+
+# def fetch_robot_description(node_name: str):
+#     if not rclpy.ok():
+#         rclpy.init()
+
+#     node = rclpy.create_node(node_name)
+#     client = node.create_client(
+#         GetParameters, "/robot_description_publisher/get_parameters")
+#     if not client.wait_for_service(timeout_sec=15.0):
+#         node.destroy_node()
+#         raise RuntimeError(
+#             "/robot_description_publisher not available. Is the simulation running?")
+
+#     req = GetParameters.Request()
+#     req.names = ["robot_description", "robot_description_semantic"]
+#     future = client.call_async(req)
+#     rclpy.spin_until_future_complete(node, future, timeout_sec=15.0)
+#     node.destroy_node()
+
+#     if future.result() is None:
+#         raise RuntimeError("Failed to read robot_description parameters.")
+
+#     vals = future.result().values
+#     return vals[0].string_value, vals[1].string_value
 
 
 def load_home_map(mat_file: Path):
@@ -183,8 +244,8 @@ def main(argv=None) -> None:
 
         print("[home_to_weld_start] Connecting to RobotInterface2...")
         robot = build_robot_interface(urdf, srdf)
+        print("[home_to_weld_start] RobotInterface2 connected.")
         robot.sense()
-
         robot_q_map = robot.qToMap(robot.getPositionReferenceFeedback())
         robot_joint_names = set(robot_q_map.keys())
         commanded_joints = [

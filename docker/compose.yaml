@@ -10,22 +10,24 @@ services:
     restart: always
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw  # x11
+      - ${XAUTHORITY}:${XAUTHORITY}:ro
       - ~/.ssh:/home/user/.ssh  # ssh
       - ~/Qt:/home/user/Qt  # qt
       - ../../acea_concert:/home/user/concert_ws/src/acea_concert:rw  # mount whole acea_concert folder
       # - ../mount_files/config_file.yaml:/home/user/patch/config_file.yaml:ro  # config file
       # - ../mount_files/concert_prismatic.py:/home/user/patch/concert_prismatic.py:ro  # prismatic script
       # - ../mount_files/patch_container.sh:/home/user/patch/patch_container.sh:ro
-
+    network_mode: host
 
     environment:
+      - DISPLAY=${DISPLAY}
+      - XAUTHORITY=${XAUTHORITY}
       - TERM=xterm-256color
-      - DISPLAY
       - NVIDIA_DRIVER_CAPABILITIES=all
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
+ #   deploy:
+ #     resources:
+ #       reservations:
+ #         devices:
+ #           - driver: nvidia
+ #             count: 1
+ #             capabilities: [gpu]

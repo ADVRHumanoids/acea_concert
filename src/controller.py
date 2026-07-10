@@ -341,8 +341,8 @@ while True:
     q_map_robot = robot.qToMap(robot.getJointPosition())
 
     # Keep wheel/steering joints at the measured state before each IK step.
-    model.setJointPosition(q_map_robot)
-    model.update()
+    # model.setJointPosition(q_map_robot)
+    # model.update()
 
     # ── model shadow updated with the robot state for ee_cur ────────────────
     model_shadow.setJointPosition(q_map_robot)

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+
+ROS2_IP="${ROS2_IP:?ROS2_IP is required}" docker compose \
+  -f compose.yaml \
+  -f compose.ros.yaml \
+  up -d

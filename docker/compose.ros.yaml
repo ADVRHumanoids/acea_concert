@@ -1,0 +1,9 @@
+services:
+  dev:
+    network_mode: host
+    environment:
+      - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
+      - ROS2_IP=${ROS2_IP:-}
+      - CYCLONEDDS_URI=file:///home/user/concert_ws/src/acea_concert/docker/cyclonedds.xml

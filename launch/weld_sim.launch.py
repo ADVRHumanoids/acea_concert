@@ -236,9 +236,9 @@ def generate_launch_description():
     # before invoking gz sim. Passing the world file with `-s` keeps this
     # package runnable in headless Docker without modifying concert_gazebo.
     gazebo_world_file = os.path.join(
-        get_package_share_directory("acea_concert"),
+        get_package_share_directory("concert_gazebo"),
         "world",
-        "empty_world_no_ros2_camera_system.sdf",
+        "empty_world.sdf",
     )
     gazebo_world_file_with_headless_flag = PythonExpression([
         "'",

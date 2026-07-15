@@ -109,6 +109,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--tangent-correction",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable the corrective action along the gap tangent.",
+    )
+    parser.add_argument(
         "--gap-pose-timeout",
         type=float,
         default=GAP_POSE_TIMEOUT_S,
@@ -399,38 +405,37 @@ while True:
     else:
         gains = controller_ros.controller_gains()
 
-        # ── PD correction toward the y-gap plane ─────────────────────────────
+        # The normal/Y correction is always active.
         y_err_dot = 0.0 if prev_y_err is None else (y_err - prev_y_err) / DT
         y_err_integral += y_err * DT
         prev_y_err = y_err
-
         vy_cmd = (
             gains['kp_normal'] * y_err
             + gains['kd_normal'] * y_err_dot
             # + KI_XYZ[1] * y_err_integral
         )
         vy_cmd = float(np.clip(vy_cmd, -MAX_Y_VEL, MAX_Y_VEL))
-
-        x_err_dot = 0.0 if prev_x_err is None else (x_err - prev_x_err) / DT
-        x_err_integral += x_err * DT
-        prev_x_err = x_err
-
-        vx_cmd = (
-            gains['kp_tangent_x'] * x_err
-            + gains['kd_tangent_x'] * x_err_dot
-            # + KI_XYZ[0] * x_err_integral
-        )
-        vx_cmd = float(np.clip(vx_cmd, -MAX_X_VEL, MAX_X_VEL))
-
-        # Apply both corrections in the gap frame: normal keeps the tool
-        # centered, tangent keeps it on the moving/rotated gap line.
         commanded_normal_coord = ee_normal_coord + vy_cmd * DT
         postural_normal_coord = float(np.dot(ee_pos_des, gap_y_axis_base))
         normal_delta = commanded_normal_coord - postural_normal_coord
 
-        commanded_tangent_coord = ee_tangent_coord + vx_cmd * DT
-        postural_tangent_coord = float(np.dot(ee_pos_des, gap_x_axis_base))
-        tangent_delta = commanded_tangent_coord - postural_tangent_coord
+        # The tangent/X correction can be omitted independently.
+        tangent_delta = 0.0
+        vx_cmd = 0.0
+        if args.tangent_correction:
+            x_err_dot = 0.0 if prev_x_err is None else (x_err - prev_x_err) / DT
+            x_err_integral += x_err * DT
+            prev_x_err = x_err
+            vx_cmd = (
+                gains['kp_tangent_x'] * x_err
+                + gains['kd_tangent_x'] * x_err_dot
+                # + KI_XYZ[0] * x_err_integral
+            )
+            vx_cmd = float(np.clip(vx_cmd, -MAX_X_VEL, MAX_X_VEL))
+            commanded_tangent_coord = ee_tangent_coord + vx_cmd * DT
+            postural_tangent_coord = float(np.dot(ee_pos_des, gap_x_axis_base))
+            tangent_delta = commanded_tangent_coord - postural_tangent_coord
+
         ee_pose_des_mod.translation = (
             ee_pos_des
             + normal_delta * gap_y_axis_base

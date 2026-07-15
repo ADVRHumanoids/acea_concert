@@ -1,14 +1,24 @@
 import argparse
 import contextlib
+import logging
 import os
 import sys
 import xml.etree.ElementTree as ET
 
 from modular.URDF_writer import UrdfWriter
 
-# If launched with --quiet flag, suppress stdout (e.g. for use in ROS2 launch files)
-cli_args = UrdfWriter.parse_generator_cli_args()
-quiet_mode = cli_args.quiet
+# Support both the current modular API and the older API shipped in some
+# workspaces.  The latter exposes the CLI writer as a module-level function and
+# has no ``quiet`` constructor argument.
+if hasattr(UrdfWriter, "parse_generator_cli_args"):
+    cli_args = UrdfWriter.parse_generator_cli_args()
+    writer_kwargs = {"quiet": cli_args.quiet}
+    legacy_write_file_to_stdout = None
+else:
+    from modular.URDF_writer import write_file_to_stdout as legacy_write_file_to_stdout
+
+    cli_args = None
+    writer_kwargs = {"logger": logging.getLogger(__name__)}
 
 is_floating_base = True
 
@@ -71,7 +81,11 @@ def add_weld_torch_camera(urdf_writer):
     urdf_writer.add_sensor_name("camera", WELD_TORCH_CAMERA_NAME)
 
 # create UrdfWriter object and joint map to store homing values
-urdf_writer = UrdfWriter(speedup=True, floating_base=is_floating_base, quiet=quiet_mode)
+urdf_writer = UrdfWriter(
+    speedup=True,
+    floating_base=is_floating_base,
+    **writer_kwargs,
+)
 homing_joint_map = {}
 
 # add mobile base
@@ -181,4 +195,7 @@ else:
 # data = urdf_writer.select_module_from_name('hub_prismatic_cart_con3')
 
 
-urdf_writer.write_file_to_stdout(homing_joint_map, args=cli_args)
+if legacy_write_file_to_stdout is None:
+    urdf_writer.write_file_to_stdout(homing_joint_map, args=cli_args)
+else:
+    legacy_write_file_to_stdout(urdf_writer, homing_joint_map)

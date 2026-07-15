@@ -31,8 +31,8 @@ from scipy.spatial.transform import Rotation as R
 from gap_pose_faults import GapPoseFaultConfig, GapPoseFaultInjector
 
 # ── Gazebo model names (from gz topic -e /world/default/pose/info) ─────────
-ROBOT_MODEL     = 'ModularBot'        # capital M and B — verified from Gazebo
-ROBOT_BASE_LINK = 'ModularBot::base_link'
+ROBOT_MODEL     = 'modularbot'        # capital M and B — verified from Gazebo
+ROBOT_BASE_LINK = 'modularbot::base_link'
 GAP_MODEL_LEFT  = 'weld_pipe_left'
 GAP_MODEL_RIGHT = 'weld_pipe_right'
 

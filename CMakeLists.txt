@@ -50,11 +50,6 @@ install(DIRECTORY rviz/
   FILES_MATCHING PATTERN "*.rviz"
 )
 
-install(DIRECTORY world/
-  DESTINATION share/${PROJECT_NAME}/world
-  FILES_MATCHING PATTERN "*.sdf"
-)
-
 install(FILES resource/acea_concert
   DESTINATION share/ament_index/resource_index/packages
 )

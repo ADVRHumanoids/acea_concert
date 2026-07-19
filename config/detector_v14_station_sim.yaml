@@ -1,0 +1,197 @@
+/**:
+  ros__parameters:
+    # Simulation v8-complete preset. Also color-agnostic: the sim pipe may be
+    # grey and textureless, so do not rely on warm/orange pixels. Keep cylinder
+    # validation required; only loosen metric thresholds that are sensitive to
+    # idealized Gazebo depth/rasterization.
+    pipe_color_prior_enabled: false
+    pipe_component_require_valid_cylinder: true
+    junction_require_cylinder_mask: true
+    pipe_lock_require_fit_model: true
+    pipe_coloroff_cylinder_guard_enabled: true
+
+    # Gazebo uses Inf for the empty background in this validation world. Keep
+    # the complete finite pipe surface instead of splitting its curved depth
+    # profile into near/far k-means clusters. Cylinder validation below remains
+    # mandatory, so finite components are candidates rather than accepted pipe
+    # geometry. This mode is intentionally enabled only by the sim preset.
+    pipe_foreground_mode: valid_depth_components
+    max_depth_m: 1.0
+
+    # The physical gap separates the synthetic depth into two clean pipe-half
+    # components. Fit either complete half directly; the upper-run band would
+    # keep only the nearest arc and make a 100 mm cylinder look like a 26 mm
+    # one. The accepted cylinder is still reprojected analytically afterwards
+    # to form the visual junction-search mask.
+    pipe_component_use_band_filter: false
+
+    # Gazebo's rasterized depth normals follow the cylinder rotation well
+    # (slope ~= 0.93) but only about half lie within the real-camera 25-degree
+    # pointwise alignment cone. Keep the strong rotation/radius/residual gates
+    # and relax only this synthetic-normal fraction.
+    pipe_cyl_guard_min_align_frac: 0.45
+
+    # A close wrist view can show only one partial arc of the cylinder. Gazebo
+    # normals remain strongly cylindrical there, but their pointwise alignment
+    # and visible azimuth coverage are lower than in the RealSense preset.
+    # These values expose only the already locked, base-frame-predicted model;
+    # they do not relax global cylinder acquisition.
+    pipe_hold_min_normal_fraction: 0.70
+    pipe_hold_min_cyl_slope: 0.35
+    pipe_hold_min_cyl_align_frac: 0.40
+    pipe_hold_min_cyl_cov_inlier_deg: 45.0
+
+    # Synthetic RGB-D has no handheld blur or RealSense jitter.  Publishing the
+    # raw accepted seam avoids the 5-15 mm lag introduced by the real-camera
+    # predictor/corrector while the wrist settles.  The real preset keeps both
+    # filters enabled.
+    enable_junction_output_smoothing: false
+    enable_junction_center_smoothing: false
+
+    # KLT is valuable on the textured real pipe during blur.  The ideal grey
+    # Gazebo cylinder has almost no trackable texture, so its flow estimate can
+    # overwrite the strong black-marker candidate with arbitrary neighbouring
+    # columns.  Keep the deterministic per-frame Variant-A measurement in sim.
+    enable_opencv_klt_tracking: false
+
+    # The full pipe mask is already rotated to a horizontal strip before
+    # Variant A runs.  Re-rotating that strip through several residual angles
+    # is redundant in ideal Gazebo imagery and roughly halves throughput.
+    variant_a_orientation_search_deg: 0.0
+
+    # At the closest wrist poses the camera sees only about 8 cm of valid
+    # cylindrical surface on one side of the real gap.  Scale the bilateral
+    # support requirement with that synthetic field of view instead of asking
+    # for ~10 cm and rejecting the true junction.  The absolute 6 cm floor,
+    # the opposite-side requirement and confirmed pipe-end memory remain on.
+    junction_axial_support_standoff_scale: 0.30
+
+    # The ideal grey cylinder still generates weak raster/specular steps. A
+    # locked junction may move locally, but a larger innovation must carry the
+    # strong black-gap evidence seen at the synthetic junction. Weak
+    # innovations coast on the previous lock instead of moving the weld pose.
+    junction_lock_innovation_gate_px: 12.0
+    junction_lock_innovation_min_evidence_z: 25.0
+    junction_lock_respect_safety_veto: true
+
+    # Derive the seam radial from the fitted cylinder axis toward camera_F.
+    # Unlike a single seam-surface depth pixel, this remains stable at the
+    # physical gap and while camera_F translates around the stationary pipe.
+    weld_seam_use_axis_center_for_radial: true
+
+    # Sim depth is clean but the rendered/visible arc can be smaller than the
+    # real handheld bag; allow the cylinder candidate to be accepted with fewer
+    # sampled inliers while preserving the cylinder model requirement.
+    cylinder_component_min_inliers: 120
+    cylinder_component_min_inlier_fraction: 0.12
+    pipe_tracking_component_min_inliers: 80
+    pipe_tracking_component_min_inlier_fraction: 0.08
+
+    publish_pipe_debug_masks: true
+    visual_pipe_mask_topic: /acea/pipe_junction/debug/visual_pipe_mask
+    cylinder_inlier_mask_topic: /acea/pipe_junction/debug/cylinder_inlier_mask
+    rejected_outliers_mask_topic: /acea/pipe_junction/debug/rejected_outliers_mask
+
+    enable_pipe_base_link_lock: true
+    pipe_base_lock_target_frame: base_link
+    pipe_base_lock_min_track_frames: 8
+    pipe_base_lock_correction_gain: 0.08
+    pipe_base_lock_use_as_prediction: true
+    # Keep TF subscriptions on a dedicated lightweight node/thread. The heavy
+    # RGB-D callback can then query base_link<-camera_F at the exact RGB stamp
+    # without starving the listener or multithreading the detector itself.
+    pipe_base_lock_use_sensor_stamp_tf: true
+    pipe_base_lock_dedicated_tf_listener: true
+    pipe_base_lock_multithreaded_executor: false
+    # V12: a moving wrist camera must never reuse a camera-frame lock in HOLD.
+    # Exact sensor-stamped TF is preferred; latest is accepted only when it is
+    # within roughly one 30 Hz camera frame of the RGB stamp. Otherwise HOLD
+    # publishes no metric pose for that frame.
+    pipe_base_lock_tf_bounded_latest_fallback: true
+    pipe_base_lock_tf_fallback_max_age_s: 0.04
+    pipe_hold_require_base_prediction: true
+
+    # Keep the stationary base-link cylinder immune to a dirty TRACK frame.
+    # Axis-point motion along the cylinder is irrelevant; the 4 mm threshold
+    # applies only perpendicular to the cylinder axis.
+    pipe_base_lock_innovation_gate_enabled: true
+    pipe_base_lock_max_axis_innovation_deg: 3.0
+    pipe_base_lock_max_lateral_innovation_m: 0.004
+    pipe_base_lock_max_radius_innovation_m: 0.01
+    pipe_fsm_owns_missed_release: true
+
+    # --- v11 seam-centre correction retained by v12 ---
+    # The frontends return a thin-line/step extremum. Once the dark feature is
+    # wider than about half of background_window_px (41), the local median
+    # follows the feature, the residual collapses across its interior and the
+    # extremum lands on an edge. Measured 2026-07-17 on the 18 mm collar: all
+    # 27 accepted poses bimodal at +/-9 mm, none within 4 mm of the seam, while
+    # the 5 mm modes stayed within 1-2 mm.
+    #
+    # Only the reported column is corrected; scoring and every gate stay on the
+    # evidence column, so acceptance is unchanged by construction.
+    junction_feature_centre_enabled: true
+    junction_feature_max_width_px: 60
+    junction_feature_min_width_px: 6
+    junction_feature_min_depth: 0.02
+    junction_feature_anchor_search_px: 6
+
+    # --- v13 station + supported-HOLD inherited by V14 ----------------------
+    # Root causes measured on the 2026-07-17 collar replay:
+    # 1. At close view (pipe fills the frame) the azimuthal-slope discriminator
+    #    is structurally blind (cov 39-54 deg, slope -0.10..0.33 on true pipe),
+    #    so HOLD support failed, the release counter expired the lock and the
+    #    detector spent 99 frames in blind ACQUIRE ("Only 0 pipe pixels").
+    #    The measured depth, however, sat on the TF-projected base cylinder
+    #    with 3.5-3.9 mm median residual at every failing stamp.
+    # 2. The oblique view displaces the collar's rendered dark band ~5 mm from
+    #    the projected GT seam, so every HOLD reacquired_measurement carried a
+    #    -4.5..-5.1 mm axial bias. The image cannot recover information it no
+    #    longer contains: the station pinned during clean frontal TRACK can.
+    pipe_hold_depth_support_enabled: true
+    pipe_hold_depth_support_max_med_m: 0.006
+    pipe_hold_depth_support_min_frac: 0.60
+    pipe_hold_depth_support_tol_m: 0.010
+    pipe_hold_release_only_when_unsupported: true
+    junction_base_station_enabled: true
+    junction_station_max_update_m: 0.003
+    junction_station_update_gain: 0.3
+    junction_station_max_age_s: 30.0
+    junction_station_use_for_prediction: true
+    junction_station_output_override_in_hold: true
+    junction_localize_prefer_base_model: true
+
+    # --- V14 station lifecycle and bounded continuity -----------------------
+    # Never initialize a persistent weld station from one frame. Five
+    # consecutive fresh TRACK measurements must agree within 3 mm on one
+    # base-lock generation. ACQUIRE/LOST clears both station and base cylinder,
+    # forcing a complete geometric reacquisition.
+    junction_station_confirm_frames: 5
+    junction_station_confirm_max_spread_m: 0.003
+    pipe_base_lock_clear_on_lost: true
+
+    # Recover only short visual dropouts from the confirmed metric station.
+    # Current cylinder support, FOV margin and pipe-end checks remain mandatory;
+    # no detector threshold is lowered.
+    junction_station_coast_enabled: true
+    # Six source frames are 0.20 s at the 30 Hz simulation camera. The replay
+    # showed one eight-frame visual dropout with current cylinder support; a
+    # 3-frame cap stopped at 94.62%. Six recovers only the first 0.20 s, while
+    # the remaining blind frames and every pipe-end/FOV failure stay rejected.
+    junction_station_coast_max_frames: 6
+    junction_station_coast_edge_margin_px: 8
+    junction_station_coast_require_pipe_support: true
+
+    # Once five compatible TRACK samples have confirmed the fixed base-frame
+    # station, high photometric evidence cannot authorize a jump to another
+    # feature. The final deterministic replays separate the two populations:
+    # valid collar samples reach 13.80 px, while the first tone-band veto is
+    # 14.35 px and its unsafe 50.32 mm outlier is 19.33 px. The 14 px bound
+    # preserves the valid collar measurements while still vetoing every
+    # observed tone-band inconsistency. A rejected sample can still be replaced
+    # only by the bounded coast after cylinder, FOV and pipe-end checks. A
+    # coasted TRACK pose uses the station directly instead of re-intersecting
+    # its projected image ray.
+    junction_station_strict_innovation_gate_enabled: true
+    junction_station_max_innovation_px: 14.0
+    junction_station_output_override_when_coasted: true

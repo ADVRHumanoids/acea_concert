@@ -1,0 +1,8 @@
+/**:
+  ros__parameters:
+    # V16 simulation overlay. The simulation stack already runs the
+    # rectified strip at 0 residual hypotheses (detector_v14_station_sim.yaml
+    # sets variant_a_orientation_search_deg: 0.0); the +/-4 deg narrowing is a
+    # real-bag optimization only and must not override the cheaper sim value.
+    # Only the station arbitration is enabled here.
+    junction_fullframe_outlier_station_arbitration_enabled: true

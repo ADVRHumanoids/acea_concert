@@ -1,0 +1,60 @@
+# Pipe-junction detector (acea_pipe_junction_node.py).
+# Subscribes RGB + depth + camera_info; publishes the junction detection and the
+# depth-backprojected weld-seam gap geometry (camera frame) consumed by
+# gap_pose_robot_node. Only high-signal params are set; the rest keep the node's
+# in-code defaults (_declare_params in acea_pipe_junction_node.py).
+/**:
+  ros__parameters:
+    # Defaults match weld_sim.launch.py + concert_gazebo D435i front bridge.
+    # Override these at launch time for a real wrist camera, e.g.
+    # rgb_topic:=/camera_front/color/image_raw depth_topic:=/camera_front/aligned_depth_to_color/image_raw
+    rgb_topic: /D435i_camera_front/color/image_raw
+    depth_topic: /D435i_camera_front/depth_image
+    camera_info_topic: /D435i_camera_front/camera_info
+    detection_topic: /acea/pipe_junction/detection
+    detected_topic: /acea/pipe_junction/detected
+    status_topic: /acea/pipe_junction/status
+
+    sync_slop_s: 1.0
+    use_receive_time_for_sync: true
+    stream_stale_s: 2.0
+    stale_subscription_reset_s: 5.0
+    # Variant A scores the thin dark junction in the RGB strip. Depth is still
+    # used to isolate the pipe from floor/background, reject obvious pipe ends,
+    # and back-project the weld gap-plane.
+    junction_acceptance_mode: variant_a_rgb
+    allow_nominal_intrinsics_fallback: true
+    variant_a_min_vertical_run_px: 8
+    variant_a_orientation_search_deg: 25.0
+    variant_a_orientation_search_step_deg: 2.0
+    enable_junction_lock: true
+    junction_lock_max_missed_frames: 12
+    junction_lock_search_radius_px: 180
+    junction_lock_min_reacquire_z: 3.0
+    junction_lock_min_reacquire_contrast: 0.006
+    junction_lock_confidence_decay: 0.96
+    junction_lock_min_confidence: 0.25
+    enable_opencv_klt_tracking: true
+    klt_max_features: 80
+    klt_feature_radius_px: 80
+    klt_min_valid_points: 4
+    klt_quality_level: 0.01
+    klt_min_distance_px: 5.0
+    klt_block_size_px: 7
+    klt_win_size_px: 21
+    klt_max_level: 3
+    klt_term_count: 20
+    klt_term_eps: 0.03
+    # Radius of the pipe used to lift the visible seam surface point to the
+    # centre of the gap plane. Keep this aligned with src/weld_opt.py /
+    # weld_sim.launch.py; ACEA concert simulation currently uses 0.10 m.
+    pipe_radius_m: 0.10
+
+    # Weld-seam gap geometry: point = depth-backprojected seam surface,
+    # normal = pipe axis. Published in the camera frame; gap_pose_robot_node
+    # transforms it into base_link.
+    publish_weld_gap_geometry: true
+    weld_gap_require_detector_accepted: true
+    weld_seam_pose_topic: /acea/weld_seam/pose
+    weld_gap_plane_topic: /acea/weld_seam/gap_plane
+    weld_marker_topic: /acea/weld_seam/markers

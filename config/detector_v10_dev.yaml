@@ -1,0 +1,16 @@
+/**:
+  ros__parameters:
+    # V10 HOLD hysteresis. Acquisition keeps the stricter v8 cylinder gates;
+    # these thresholds only validate the frozen, already-trusted cylinder in a
+    # short HOLD. They preserve partial close-up arcs while rejecting cloth-only
+    # frames before either the mask or junction lock is published.
+    pipe_hold_min_normal_fraction: 0.85
+    pipe_hold_min_cyl_slope: 0.04
+    pipe_hold_min_cyl_align_frac: 0.75
+    pipe_hold_min_cyl_cov_inlier_deg: 60.0
+
+    # An active lock must move locally.  The inherited 180 px window allowed
+    # isolated specular edges 74-75 px away to replace a healthy junction in a
+    # single frame.  Long-outage re-acquisition still uses the separate,
+    # blind-time-scaled fresh gate (up to 300 px).
+    junction_lock_search_radius_px: 60

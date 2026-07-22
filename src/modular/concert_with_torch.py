@@ -164,16 +164,16 @@ data = urdf_writer.add_module('concert/module_joint_yaw_A_concert.json')    # J2
 homing_joint_map[str(data['name'])] = 0.0
 
 #add a 30cm passive link
-data = urdf_writer.add_module('concert/module_link_straight_300_concert.json')
+data = urdf_writer.add_module('concert/module_link_straight_400_concert.json')
 
 data = urdf_writer.add_module('concert/module_joint_elbow_A_concert.json')  # J3_F
 homing_joint_map[str(data['name'])] = -1.47 if args.use_prismatic_joint else 1.47
 
-data = urdf_writer.add_module('concert/module_joint_yaw_A_concert.json')    # J4_F
+data = urdf_writer.add_module('concert/module_joint_yaw_B_concert.json')    # J4_F
 homing_joint_map[str(data['name'])] = 0.0
 
 #add a 30cm passive link
-data = urdf_writer.add_module('concert/module_link_straight_400_concert.json')
+data = urdf_writer.add_module('concert/module_link_straight_300_concert.json')
 
 data = urdf_writer.add_module('concert/module_joint_elbow_B_concert.json')  # J5_F
 homing_joint_map[str(data['name'])] = 0.75 if args.use_prismatic_joint else -0.75

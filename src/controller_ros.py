@@ -12,6 +12,8 @@ from utils.diagnostic import DiagnosticPlotter
 from utils.gap_pose_filter import GapPoseLowPass
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from std_msgs.msg import String
+from rclpy.executors import SingleThreadedExecutor
+
 
 
 def fetch_robot_description(
@@ -20,6 +22,7 @@ def fetch_robot_description(
         rclpy.init()
 
     node = rclpy.create_node(node_name)
+
     robot_description = None
     robot_description_semantic = None
 
@@ -51,22 +54,31 @@ def fetch_robot_description(
         qos,
     )
 
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
+
     deadline = monotonic() + timeout_sec
+
     try:
         while rclpy.ok():
-            if (robot_description is not None
-                    and robot_description_semantic is not None):
+            if (robot_description is not None and
+                    robot_description_semantic is not None):
                 return robot_description, robot_description_semantic
+
             if monotonic() >= deadline:
                 raise RuntimeError(
                     "Failed to receive robot description topics. "
                     "Check QoS compatibility and that /xbotcore is running."
                 )
-            rclpy.spin_once(node, timeout_sec=0.1)
+
+            executor.spin_once(timeout_sec=0.1)
 
         raise RuntimeError(
-            "ROS shut down while reading robot description topics.")
+            "ROS shut down while reading robot description topics."
+        )
+
     finally:
+        executor.remove_node(node)
         node.destroy_node()
 
 

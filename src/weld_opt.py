@@ -120,7 +120,7 @@ footprint_robot_y = 0.7
 
 length_pipe = 5.0
 pipe_gap = 0.005
-pos_center_pipe = [1.5, 0.0, 0.587 + 0.45 + 0.3 + 0.03]  # nominal pipe center position in world frame
+pos_center_pipe = [1.5, 0.0, 0.587 + 0.45 + 0.3 + 0.05]  # nominal pipe center position in world frame
 orientation_pipe = [0.7071068, 0.0, 0.0, 0.7071068]
 radius_pipe = 0.1 # 0.15, 0.25, 0.35 available
 

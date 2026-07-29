@@ -94,20 +94,25 @@ class TrajectoryReplayer:
         init_scene.kill_existing_markers()
         init_scene.launch_scene()
 
-    def replay(self):
+    def replay(self, speed=1.0):
+        assert speed > 0, "speed must be positive"
         
         if self.solution_augmented is not None:
             q_forward = self.solution_augmented['q']
         else:
-            q_forward = self.data['q']
+            replay_dt = 0.01  # Fixed 100 Hz for smooth playback.
+            duration = (self.nodes_q - 1) * self.dt / speed
+            q_forward = self.resample_q(round(duration / replay_dt) + 1)
+
             q_backward = np.flip(q_forward, axis=1)
             q_cycle = np.concatenate([q_forward, q_backward], axis=1)
 
             print(f"Replaying trajectory with {q_cycle.shape[1]} steps (forward and backward)")
-            repl = replay_trajectory.replay_trajectory(self.dt, self.kin_dyn.joint_names(), 
-                                                    q_cycle,
-                                                    kindyn=self.kin_dyn)
-
+            repl = replay_trajectory.replay_trajectory(replay_dt,
+                                                       self.kin_dyn.joint_names(),
+                                                       q_cycle,
+                                                       kindyn=self.kin_dyn
+                                                       )
             repl.replay()
 
     def add_wiggling_ee_y(self, nodes, t_max, wiggle_amplitude=0.01, wiggle_frequency=2*np.pi):
@@ -222,4 +227,4 @@ if __name__ == '__main__':
                                             # wiggle_amplitude=0.01, 
                                             # wiggle_frequency=200*np.pi)  # Resample to 100 nodes for smoother replay
 
-    xbot_horizon_replayer.replay()
+    xbot_horizon_replayer.replay(speed=1.0)

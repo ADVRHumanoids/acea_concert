@@ -1,5 +1,5 @@
 services:
-  dev:
+  acea_concert:
     build:
       context: .
     image: acea_concert:latest

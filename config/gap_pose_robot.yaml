@@ -1,0 +1,62 @@
+# Perception gap_pose_robot publisher (gap_pose_robot_node.py).
+# Transforms the detector's camera-frame gap geometry into base_link and
+# republishes /gap/pose_robot (PoseStamped) with the same gap-frame convention
+# as the ground-truth gap_pose_publisher.py (y = pipe axis, x = radial, z = x X y).
+/**:
+  ros__parameters:
+    input_gap_plane_topic: /acea/weld_seam/gap_plane
+    output_pose_topic: /gap/pose_robot
+    output_matrix_topic: /gap/pose_robot_matrix
+    # Debug-only numeric 4x4 transform. The controller should consume
+    # /gap/pose_robot, not this matrix topic.
+    publish_matrix: false
+
+    # base_link is the frame used across acea_concert (matches gap_pose_publisher.py).
+    target_frame: base_link
+    # Empty -> use the frame_id stamped on the detector's gap message.
+    camera_frame_override: ''
+
+    # tf2 lookup camera_optical_frame -> target_frame. This should be the normal
+    # online path. If a static fallback is needed for a lab/offline setup, enable
+    # it only after setting the real camera extrinsic below.
+    use_tf: true
+    tf_timeout_s: 0.5
+    # Preserve the validated real-camera behavior by default. The v10 sim
+    # launcher overrides both values so geometry, TF and the output pose all
+    # refer to the detector's RGB timestamp.
+    use_sensor_stamp_tf: false
+    preserve_input_stamp: false
+    static_fallback_enabled: false
+    allow_identity_static_fallback: false
+    static_cam_to_base_xyz: [0.0, 0.0, 0.0]
+    static_cam_to_base_quat_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+    # Sign disambiguation of the perceived axis / radial vs the GT convention.
+    # The cylinder fit has no intrinsic +axis direction: +axis and -axis are the
+    # same pipe, but they are different /gap/pose_robot quaternions. Keep the
+    # published frame canonical in base_link by aligning it to the same nominal
+    # directions used by the Gazebo ground-truth gap_pose_publisher.py:
+    #   +Y = pipe/gap axis, +X = radial weld direction.
+    # Set use_reference_sign_canonicalization:=false or set a reference to
+    # [0, 0, 0] if a different fixture intentionally uses another convention.
+    axis_sign: 1.0
+    radial_sign: 1.0
+    use_reference_sign_canonicalization: true
+    axis_reference_target_xyz: [0.0, 1.0, 0.0]
+    radial_reference_target_xyz: [1.0, 0.0, 0.0]
+    use_temporal_sign_continuity: true
+
+    require_pose_valid: true
+    require_metric_3d: true
+    reject_assumed_depth: true
+
+    # Optional visual/debug convenience only. Keep this false for controller
+    # tests by default: republishing stale poses can hide detector dropouts and
+    # make the robot consume an old gap pose. Enable explicitly only when a
+    # bounded hold is acceptable for the experiment.
+    hold_last_pose: false
+    hold_publish_rate_hz: 20.0
+    hold_max_age_s: 2.5
+
+    broadcast_tf: false
+    gap_tf_child_frame: gap_seam

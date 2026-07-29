@@ -395,3 +395,51 @@ base_R_ee_des = base_R_gap * gap_R_ee_des
 - XBot2
 - CartesIO
 - NumPy, SciPy, Matplotlib
+
+## 3. Camera-Based Gap Perception (validated detector)
+
+The `src/detection/` module replaces the Gazebo ground-truth
+`gap_pose_publisher.py` with a real camera-based pipe-junction detector. It
+publishes the same interface: `/gap/pose_robot` (`geometry_msgs/PoseStamped`,
+frame `base_link`, y = pipe axis, x = radial, z = x cross y), so
+`drive_base_to_weld_pose.py` and the controller consume it unchanged.
+
+Validated results (2026-07-19, idle host):
+
+- real-camera cloth/support bag: 1463/1463 required frames valid, zero
+  stale/hidden/unsafe poses;
+- full live simulation cycle (Gazebo + XBot2 + homing + 65 s trajectory):
+  354/354 frames accepted, position error median 1.15 mm / p95 6.4 mm,
+  orientation p95 0.30 deg, zero axis flips;
+- output rate ~4.4 Hz in live simulation, ~7 Hz on real camera frames
+  (single-thread CPU-bound; the controller was validated at these rates). The
+  detector never publishes a predicted or held pose: silent frames are
+  fail-closed by contract.
+
+### Run the detector standalone with your own trajectory
+
+Terminal A (simulation, or skip on the real robot):
+
+```bash
+ros2 launch acea_concert weld_sim_v10_realistic_validation.launch.py \
+  gui:=true xbot2:=true rviz:=false optimized_robot_pose:=true \
+  mat_file:=/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat \
+  pipe_visual_preset:=painted_orange junction_visual_mode:=inner_wall \
+  start_front_camera_bridges:=false publish_robot_state_tf:=true
+```
+
+Terminal B (detector + pose bridge; use `camera_preset:=real` on the robot —
+the simulation preset and its recovery paths are NOT loaded on real):
+
+```bash
+ros2 launch acea_concert detection_v16_dev.launch.py \
+  use_sim_time:=true camera_preset:=sim sim_camera_name:=camera_F \
+  mat_file:=/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat \
+  pipe_radius_m:=auto
+```
+
+Then run homing / base drive / controller exactly as in section 2; the
+controller reads `/gap/pose_robot` from the detector instead of the ground
+truth publisher. Do not run `gap_pose_publisher.py` at the same time on the
+same topic (remap it to `/acea/ground_truth/gap_pose_robot` if you want the
+comparison).

@@ -1,0 +1,20 @@
+/**:
+  ros__parameters:
+    # Real-camera v8-complete preset. Color prior stays OFF so pipe detection is
+    # not tied to orange paint; geometry/normal/cylinder guards stay ON.
+    pipe_color_prior_enabled: false
+    pipe_component_require_valid_cylinder: true
+    junction_require_cylinder_mask: true
+    pipe_lock_require_fit_model: true
+    pipe_coloroff_cylinder_guard_enabled: true
+
+    publish_pipe_debug_masks: true
+    visual_pipe_mask_topic: /acea/pipe_junction/debug/visual_pipe_mask
+    cylinder_inlier_mask_topic: /acea/pipe_junction/debug/cylinder_inlier_mask
+    rejected_outliers_mask_topic: /acea/pipe_junction/debug/rejected_outliers_mask
+
+    enable_pipe_base_link_lock: true
+    pipe_base_lock_target_frame: base_link
+    pipe_base_lock_min_track_frames: 8
+    pipe_base_lock_correction_gain: 0.08
+    pipe_base_lock_use_as_prediction: true

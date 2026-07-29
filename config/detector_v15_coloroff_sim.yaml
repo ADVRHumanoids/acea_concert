@@ -1,0 +1,13 @@
+/**:
+  ros__parameters:
+    # Simulation-only recovery for a rapid camera sweep. A mature local lock can
+    # lag while the current global luminance candidate has already moved to the
+    # true junction. The global line is only a search hint: it is published
+    # exclusively after the unchanged current RGB/depth/task-cylinder proof.
+    junction_fullframe_global_candidate_rescue_enabled: true
+    junction_fullframe_global_candidate_search_radius_px: 10
+    junction_fullframe_global_candidate_min_separation_px: 8
+    junction_fullframe_global_candidate_min_contrast: 0.05
+    junction_fullframe_global_candidate_min_z: 8.0
+    junction_fullframe_global_candidate_min_line_px: 70.0
+    junction_fullframe_global_candidate_max_sync_dt_s: 0.040

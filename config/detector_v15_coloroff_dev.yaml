@@ -1,0 +1,116 @@
+/**:
+  ros__parameters:
+    # V15 is evaluated only in the color-independent operating mode.
+    pipe_color_prior_enabled: false
+
+    # A geometric veto is final. No station/KLT coast may publish a pose after
+    # pipe-end or remembered-end rejection.
+    junction_lock_respect_safety_veto: true
+
+    # Predictions may move a search window, but V15 never exposes them as a
+    # detector measurement. Every published pose must contain a junction proof
+    # from the current RGB-D frame.
+    enable_junction_coast_publish: false
+    junction_station_coast_enabled: false
+    junction_station_output_override_when_coasted: false
+    junction_station_output_override_in_hold: false
+
+    # Give the controller one stable geometric pose convention in every
+    # current-measurement path. The origin is the camera-facing point on the
+    # fitted cylinder at the measured junction station; the original depth
+    # surface sample remains available in diagnostics. This changes neither
+    # acceptance nor any pipe-end/current-frame safety gate.
+    weld_surface_canonicalization_enabled: true
+    weld_seam_use_axis_center_for_radial: true
+
+    # Preserve a trusted pipe through partial views using current-frame model
+    # compatibility and measured depth, not an unconditional stale HOLD.
+    pipe_fsm_owns_missed_release: true
+    pipe_partial_lock_support_enabled: true
+    pipe_partial_lock_motion_comp_enabled: true
+    pipe_partial_lock_lateral_per_klt_px_m: 0.0017
+    pipe_partial_lock_motion_max_extra_m: 0.040
+    pipe_partial_lock_allow_current_selected: true
+    pipe_hold_depth_support_enabled: true
+    pipe_hold_depth_support_allow_camera_lock: true
+    pipe_hold_camera_lock_max_frames: 6
+    pipe_hold_release_only_when_unsupported: true
+
+    # Eliminate startup latency only when the independent strict proof passes.
+    junction_single_frame_proof_enabled: true
+
+    # Prefer a mature local track over a distant global line only inside the
+    # normally excluded image margin. In the interior, a strong visual seam
+    # remains authoritative so KLT cannot drift onto generic pipe texture.
+    # Preserve the signed out-of-view coordinate and permit border search only
+    # with local evidence. These switches do not change fresh acquisition.
+    junction_klt_prefer_mature_lock_enabled: true
+    junction_lock_local_visual_fallback_enabled: true
+    junction_lock_local_visual_min_evidence_z: 3.0
+    junction_unbounded_flow_enabled: true
+    junction_klt_border_search_enabled: true
+    junction_klt_border_max_innovation_px: 8.0
+    junction_border_exit_continuity_enabled: true
+    # Strong current border evidence is allowed; flow-only follow-up frames are
+    # retained as search state but never published as measurements.
+    junction_border_exit_max_weak_frames: 0
+    junction_border_prearm_enabled: true
+    junction_border_prearm_extra_px: 24.0
+    junction_border_prearm_min_evidence_z: 3.0
+    junction_border_transition_slack_px: 2.0
+    junction_out_of_view_max_frames: 30
+    # The detector edge margin already excludes 6% of the image. The legacy
+    # extra 12 px suppressed a still-visible right-border junction (old f249).
+    junction_coast_publish_edge_margin_px: 0
+
+    # A shortened 3D extent may be identified as a close-view artifact only by
+    # a mature, KLT-aligned candidate with dense pipe support on both sides.
+    junction_tracked_bilateral_override_enabled: true
+
+    # KLT can drift on an otherwise valid pipe texture. The stronger fallback
+    # uses only current depth pixels within 10 mm of the fitted outer-cylinder
+    # surface on both sides of a current visual junction. It cannot borrow
+    # support from the projected silhouette or a stale lock.
+    junction_measured_bilateral_support_enabled: true
+    junction_measured_bilateral_radius_tol_m: 0.010
+    junction_measured_bilateral_min_coverage: 0.65
+    junction_measured_bilateral_min_evidence_z: 1.25
+
+    # V15-only recovery for a junction that remains physically visible while
+    # a close/border view no longer contains enough pipe pixels for the normal
+    # full-cylinder strip. Every accepted recovery must remeasure the dark line,
+    # bilateral depth and a task-radius cylinder in the current RGB-D frame;
+    # previous state only bounds the image search and is never republished.
+    junction_fullframe_continuity_enabled: true
+    # A complete normal pose returning after recovery must be supported along
+    # at least 30% of its claimed line; a four-pixel endpoint coincidence is
+    # not enough to replace a current RGB-D recovery.
+    junction_fullframe_normal_self_check_min_coverage: 0.30
+    # Deliberately disabled after the real startup replay: without a previously
+    # validated junction, a cloth edge near the pipe produced false locks. A
+    # near-invisible border sliver is excluded from actionable observability.
+    junction_fullframe_fresh_border_acquire_enabled: false
+    # A local metric pose is emitted only when RANSAC and an independent
+    # deterministic all-points estimate agree. This rejects underconstrained
+    # grazing slivers without weakening any existing cylinder or pipe-end gate.
+    junction_fullframe_independent_model_check_enabled: true
+    junction_fullframe_independent_max_center_delta_m: 0.025
+    junction_fullframe_independent_max_axis_delta_deg: 15.0
+    junction_fullframe_independent_max_side_median_m: 0.025
+    # Reject a farther radius-consistent background cylinder when current
+    # bilateral samples expose a nearer pipe layer by more than 50 mm.
+    junction_fullframe_foreground_layer_guard_enabled: true
+    junction_fullframe_max_foreground_range_excess_m: 0.050
+    # When the local crop has two plausible task-radius axes, use the main
+    # pipe fit only if it was independently validated in this same TRACK frame
+    # and the current seam has at least 70 px of bilateral cylinder support.
+    # This recovers isolated full-view ambiguities while keeping micro-slivers
+    # and every HOLD/lock-only prediction fail-closed.
+    junction_fullframe_trusted_current_model_enabled: true
+    junction_fullframe_trusted_current_model_min_line_px: 70.0
+    junction_fullframe_trusted_current_model_max_radius_delta_m: 0.010
+    junction_fullframe_trusted_current_model_max_image_axis_delta_deg: 12.0
+
+    # Keep the numerically equivalent frontend. The faster OpenCV-filter
+    # experiment changed geometry by 73.6 mm and is intentionally not enabled.
+    variant_a_backend: scipy

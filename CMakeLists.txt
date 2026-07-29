@@ -8,6 +8,8 @@ install(PROGRAMS
   scripts/apply_gz_wrench.py
   scripts/kill_concert_stack
   scripts/omnisteering_sine_command.py
+  scripts/read_ros_string_xml.py
+  scripts/start_xbot2_after_clock.sh
   src/drive_base_to_weld_pose.py
   src/home_to_weld_start.py
   src/weld_opt.py
@@ -22,6 +24,24 @@ install(PROGRAMS
   src/gap_pose_publisher.py
   src/plot_weld_result.py
   DESTINATION lib/${PROJECT_NAME}
+)
+
+# --- ACEA perception detection module (validated V16 line) ---
+# Publishes /gap/pose_robot (base_link) as a drop-in replacement for the
+# Gazebo ground-truth gap_pose_publisher.py. acea_alignment/ is installed next
+# to the nodes so their `from acea_alignment...` imports resolve via ros2 run.
+install(PROGRAMS
+  src/detection/acea_pipe_junction_node_v16_dev.py
+  src/detection/acea_fullframe_continuity_v15.py
+  src/detection/acea_seam_detector_v15.py
+  src/detection/acea_detection_runtime.py
+  src/detection/gap_pose_robot_node_v14_dev.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY src/detection/acea_alignment/
+  DESTINATION lib/${PROJECT_NAME}/acea_alignment
+  FILES_MATCHING PATTERN "*.py"
 )
 
 install(DIRECTORY src/modular/

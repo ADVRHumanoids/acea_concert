@@ -1,0 +1,19 @@
+/**:
+  ros__parameters:
+    # V16 final configuration. Full-bag ablation on the cloth contract
+    # (1463 required frames) measured each optimization independently:
+    #   +/-4 deg residual search        -> 1463/1463, the only free win
+    #   cached-normal-axis reuse        -> 1462/1463 (frame 1532 lost)
+    #   reproject stride 4              -> 1453/1463 (border family lost)
+    # Only the contract-preserving optimization is enabled. The strip is
+    # already rectified by the current 3D cylinder axis; +/-4 degrees covers
+    # the measured residual with five hypotheses instead of 27.
+    variant_a_orientation_search_deg: 4.0
+
+    # Station-arbitrated outlier veto: an outlier veto whose reference line
+    # failed its own current cylinder proof cannot silence a fully proven
+    # normal pose that the metric station projection independently confirms
+    # (<=12 px strict gate, TRACK only, fresh station). Output remains the
+    # current measurement; the station is never published. Inert on stacks
+    # without the strict station gate (the real-camera stack).
+    junction_fullframe_outlier_station_arbitration_enabled: true

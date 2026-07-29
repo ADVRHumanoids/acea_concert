@@ -1,0 +1,74 @@
+## XBotInterface descriptions
+
+# Read the String payload directly. ``ros2 topic echo`` serializes it as YAML
+# and can place formatting before the XML declaration, which crashes XBot's
+# XML parser during repeated simulation launches.
+XBotInterface:
+  urdf: "ros2 run acea_concert read_ros_string_xml.py --topic /robot_description"
+  srdf: "ros2 run acea_concert read_ros_string_xml.py --topic /robot_description_semantic"
+ModelInterface:
+  model_type: pin
+
+
+## XBot2 configuration copied from concert_xbot2/modular.yaml
+
+xbotcore_device_configs:
+    sim: $(ros2 pkg prefix --share concert_xbot2)/hal/ModularBot_gz.yaml
+    dummy: $(ros2 pkg prefix --share concert_xbot2)/hal/ModularBot_dummy.yaml
+    isaac: $(ros2 pkg prefix --share concert_xbot2)/hal/ModularBot_isaac.yaml
+
+xbotcore_threads:
+  rt_main: { sched: fifo, prio: 60, period: 0.001}
+  nrt_main: { sched: other, prio: 0, period: 0.005 }
+
+xbotcore_plugins:
+  ros_io: { thread: nrt_main, type: ros2_io }
+
+  ros_ctrl: { thread: nrt_main, type: ros2_control }
+
+  omnisteering:
+    thread: nrt_main
+    type: omnisteering_controller_plugin
+    params:
+      wheel_names:
+        value: [wheel_A, wheel_B, wheel_C, wheel_D]
+        type: vector<string>
+      wheel_radius:
+        value: [0.16, 0.16, 0.16, 0.16]
+        type: vector<double>
+
+  homing:
+    thread: rt_main
+    type: homing
+    params:
+      time: { value: 5.0, type: double }
+
+  gcomp:
+    thread: rt_main
+    type: gcomp_example
+    params:
+      enabled_chains: [chain_E]
+
+  cartesio_imp:
+    thread: rt_main
+    type: albero_cartesio_rt
+    params:
+      enabled_chains:
+        value: [chain_E]
+        type: vector<string>
+      problem_description:
+        value: $(ros2 pkg prefix --share concert_xbot2)/ModularBot_impedance_config.yaml
+        type: file
+      solver: {value: AlberoImpedance, type: string}
+      enable_feedback: {value: true, type: bool}
+      fc_map: {value: {low: 0.9, high: 0.95}, type: map<double>}
+      use_payload_estimator:
+        value: false
+        type: bool
+      payload_estimator_link:
+        value: ee_E
+        type: string
+
+xbotcore_param:
+  /xbot/hal/joint_safety/filter_autostart: {value: true, type: bool}
+  /xbot/hal/joint_safety/filter_cutoff_hz: {value: 2.0, type: double}

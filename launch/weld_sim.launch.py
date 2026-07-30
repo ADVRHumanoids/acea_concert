@@ -13,6 +13,8 @@ Usage:
  
 import os
 import math
+import subprocess
+import time
 from pathlib import Path
  
 import numpy as np
@@ -34,6 +36,11 @@ PATH_TO_MODULAR_PYTHON = PATH_TO_CONCERT_WS / "src" / "modular" / "src"
 MODULAR_DESCRIPTION = str(PATH_TO_ACEA_CONCERT / "src" / "modular" / "concert_with_torch.py")
 GZ_RESOURCE_PATH = str(PATH_TO_CONCERT_WS / "install" / "share")
 DEFAULT_MAT_FILE = PATH_TO_ACEA_CONCERT / "mat_files" / "weld_concert.mat"
+
+PIPE_SPAWN_DELAY = 2.0
+PIPE_SPAWN_ATTEMPTS = 10
+PIPE_SPAWN_ATTEMPT_TIMEOUT = 5.0
+PIPE_SPAWN_RETRY_DELAY = 1.0
  
  
 def _mat_vector(data, name, default=None):
@@ -148,8 +155,38 @@ def _float_launch_config(context, name):
  
 def _bool_launch_config(context, name):
     return LaunchConfiguration(name).perform(context).lower() in ("1", "true", "yes", "on")
- 
- 
+
+
+def _spawn_pipe_with_retry(context, entity_name, arguments):
+    command = ["ros2", "run", "ros_gz_sim", "create", *arguments]
+    for attempt in range(1, PIPE_SPAWN_ATTEMPTS + 1):
+        print(
+            f"[weld_sim] Spawning {entity_name}: "
+            f"attempt {attempt}/{PIPE_SPAWN_ATTEMPTS}"
+        )
+        try:
+            result = subprocess.run(
+                command,
+                timeout=PIPE_SPAWN_ATTEMPT_TIMEOUT,
+                check=False,
+            )
+            if result.returncode == 0:
+                print(f"[weld_sim] Spawned {entity_name}.")
+                return []
+        except subprocess.TimeoutExpired:
+            print(
+                f"[weld_sim] Spawn attempt for {entity_name} timed out."
+            )
+
+        if attempt < PIPE_SPAWN_ATTEMPTS:
+            time.sleep(PIPE_SPAWN_RETRY_DELAY)
+
+    raise RuntimeError(
+        f"Failed to spawn {entity_name} after "
+        f"{PIPE_SPAWN_ATTEMPTS} attempts"
+    )
+
+
 def _spawn_pipe_actions(context, *args, **kwargs):
     mat_file, selected_matdata = _load_mat_file(context)
     pipe = _pipe_geometry_from_mat(selected_matdata)
@@ -179,42 +216,42 @@ def _spawn_pipe_actions(context, *args, **kwargs):
         # the robot starts centered 2 m from the pipe. pipe_y_axis_yaw rotates
         # the whole pipe/gap frame around vertical Z.
         TimerAction(
-            period=2.0,
+            period=PIPE_SPAWN_DELAY,
             actions=[
-                Node(
-                    package="ros_gz_sim",
-                    executable="create",
-                    name="spawn_weld_pipe_left",
-                    arguments=[
-                        "-string", pipe["sdf_left"],
-                        "-x", f"{pipe_spawn_x + pipe_offset_x:.6f}",
-                        "-y", f"{pipe_spawn_y + pipe_offset_y:.6f}",
-                        "-z", f"{pipe['z']:.6f}",
-                        "-R", "1.5708",
-                        "-P", "0.0",
-                        "-Y", f"{pipe_y_axis_yaw:.6f}",
-                    ],
-                    output="screen",
+                OpaqueFunction(
+                    function=_spawn_pipe_with_retry,
+                    kwargs={
+                        "entity_name": "weld_pipe_left",
+                        "arguments": [
+                            "-string", pipe["sdf_left"],
+                            "-x", f"{pipe_spawn_x + pipe_offset_x:.6f}",
+                            "-y", f"{pipe_spawn_y + pipe_offset_y:.6f}",
+                            "-z", f"{pipe['z']:.6f}",
+                            "-R", "1.5708",
+                            "-P", "0.0",
+                            "-Y", f"{pipe_y_axis_yaw:.6f}",
+                        ],
+                    },
                 ),
             ],
         ),
         TimerAction(
-            period=2.0,
+            period=PIPE_SPAWN_DELAY,
             actions=[
-                Node(
-                    package="ros_gz_sim",
-                    executable="create",
-                    name="spawn_weld_pipe_right",
-                    arguments=[
-                        "-string", pipe["sdf_right"],
-                        "-x", f"{pipe_spawn_x - pipe_offset_x:.6f}",
-                        "-y", f"{pipe_spawn_y - pipe_offset_y:.6f}",
-                        "-z", f"{pipe['z']:.6f}",
-                        "-R", "1.5708",
-                        "-P", "0.0",
-                        "-Y", f"{pipe_y_axis_yaw:.6f}",
-                    ],
-                    output="screen",
+                OpaqueFunction(
+                    function=_spawn_pipe_with_retry,
+                    kwargs={
+                        "entity_name": "weld_pipe_right",
+                        "arguments": [
+                            "-string", pipe["sdf_right"],
+                            "-x", f"{pipe_spawn_x - pipe_offset_x:.6f}",
+                            "-y", f"{pipe_spawn_y - pipe_offset_y:.6f}",
+                            "-z", f"{pipe['z']:.6f}",
+                            "-R", "1.5708",
+                            "-P", "0.0",
+                            "-Y", f"{pipe_y_axis_yaw:.6f}",
+                        ],
+                    },
                 ),
             ],
         ),

@@ -498,6 +498,13 @@ Validated results (2026-07-19, idle host):
 Terminal A (simulation, or skip on the real robot):
 
 ```bash
+
+source /home/user/env/bin/activate
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+source setup.bash
+source /opt/xbot/setup.sh
+
 ros2 launch acea_concert weld_sim_perception.launch.py \
   mat_file:=/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat \
   optimized_robot_pose:=true

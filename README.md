@@ -166,6 +166,72 @@ To use a different optimization result, pass `mat_file`. To start with the gap a
 ros2 launch acea_concert weld_sim.launch.py mat_file:=mat_files/weld_concert.mat optimized_robot_pose:=true
 ```
 
+### Perception Simulation (`camera_F`)
+
+The original `weld_sim.launch.py` remains standalone and uses the canonical
+robot generator. It does not depend on the perception files and does not add
+the wrist camera.
+
+Use the perception wrapper when testing the V16 detector:
+
+```bash
+cd /home/user/concert_ws
+ros2 launch acea_concert weld_sim_perception.launch.py \
+  mat_file:=/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat \
+  optimized_robot_pose:=true
+```
+
+The wrapper calls `weld_sim.launch.py` and adds only the perception setup:
+
+- wrist RGB-D camera `camera_F` and its ROS bridges;
+- painted pipe with a physical dark inner wall visible through the gap;
+- robot TF publication;
+- XBot2 startup after the Gazebo clock is active.
+
+These are already the wrapper defaults: `optimized_robot_pose:=true`,
+`pipe_visual_preset:=painted_orange`,
+`junction_visual_mode:=inner_wall`, `xbot2:=true`, `rviz:=false`, and the
+unused front-camera bridges disabled. The two arguments in the command above
+are kept explicit so the geometry source and optimized placement are obvious.
+
+`optimized_robot_pose` places the pipe relative to the optimized welding pose;
+it does **not** move the arm joints. Before checking the camera image or the
+detector, enable ROS control and run the project's gravity-compensation and
+homing sequence. A sky/background-only `camera_F` image before homing is
+expected and is not a detector failure.
+
+The perception wrapper deliberately does not modify `controller.py`,
+`home_to_weld_start.py`, or the XBot control policy. Verify the reported joint
+and end-effector homing errors before evaluating perception. If homing does not
+converge (for example because the expected XBot gravity-compensation plugin is
+not available), resolve that in the control stack rather than changing the
+camera pose or detector thresholds.
+
+After homing, launch perception in another sourced terminal:
+
+```bash
+cd /home/user/concert_ws/src/acea_concert
+source scripts/concert_env.bash
+
+ros2 launch acea_concert detection_v16_dev.launch.py \
+  use_sim_time:=true \
+  camera_preset:=sim \
+  sim_camera_name:=camera_F \
+  mat_file:=/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat \
+  pipe_radius_m:=auto
+```
+
+Check the detector and controller-facing pose:
+
+```bash
+ros2 topic echo /acea/pipe_junction/status --once --field data
+ros2 topic echo /gap/pose_robot --once
+```
+
+Do not run `gap_pose_publisher.py` at the same time as the detector: the former
+publishes Gazebo ground truth on `/gap/pose_robot`, while the detector must be
+the only publisher on that topic during perception tests.
+
 ### XBot GUI
 
 Start the XBot GUI after the simulation is running.

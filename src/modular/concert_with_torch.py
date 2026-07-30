@@ -182,9 +182,9 @@ data = urdf_writer.add_module('concert/module_joint_yaw_B_concert.json')    # J6
 homing_joint_map[str(data['name'])] = 0.0
 
 if args.use_prismatic_joint:
-    data = urdf_writer.add_module('experimental/module_weld_torch_dummy_mockup.json')
+    data = urdf_writer.add_module('experimental/module_weld_torch_dummy.json')
 else:
-    data = urdf_writer.add_module('experimental/module_weld_torch_dummy_mockup.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': -1.5707963267948966})
+    data = urdf_writer.add_module('experimental/module_weld_torch_dummy.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': -1.5707963267948966})
 
 # add_weld_torch_camera(urdf_writer)
 

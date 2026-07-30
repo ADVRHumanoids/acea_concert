@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Home the weld joints to trajectory node 0 before running controller.py."""
+"""Home the weld joints to trajectory node 0 before running controller.py.
+
+Usage:
+    ros2 run acea_concert home_to_weld_start.py
+    ros2 run acea_concert home_to_weld_start.py \
+        --homing-trajectory /tmp/weld_concert_compact.mat
+"""
 
 import argparse
 import sys
@@ -24,6 +30,22 @@ BASE_AND_WHEEL_JOINTS = (
 )
 
 VIRTUAL_JOINTS = {"universe", "reference"}
+PLANNED_START_TOLERANCE = 0.05
+FINAL_HOLD_DURATION = 1.0
+
+
+def _mat_string(value):
+    if isinstance(value, np.ndarray):
+        flattened = value.reshape(-1)
+        if flattened.size == 1:
+            return _mat_string(flattened[0])
+        if value.dtype.kind in ("U", "S"):
+            return "".join(str(item) for item in flattened).strip()
+    return str(value).strip()
+
+
+def _mat_joint_names(mat_data):
+    return [_mat_string(name) for name in mat_data["joint_names"].flatten()]
 
 
 def ee_link_from_urdf(urdf: str):
@@ -41,7 +63,7 @@ def ee_link_from_urdf(urdf: str):
 def load_home_map(mat_file: Path):
     mat_data = loadmat(str(mat_file))
     q_traj = mat_data["q"]
-    all_jnames = [str(n).strip() for n in mat_data["joint_names"].flatten()]
+    all_jnames = _mat_joint_names(mat_data)
     jnames = [name for name in all_jnames if name not in VIRTUAL_JOINTS]
 
     q_act = q_traj[7:, :]
@@ -51,6 +73,33 @@ def load_home_map(mat_file: Path):
         for i, name in enumerate(jnames)
         if name not in BASE_AND_WHEEL_JOINTS
     }
+
+
+def load_planned_homing(mat_file: Path):
+    mat_data = loadmat(str(mat_file))
+    if "q_homing" not in mat_data:
+        return None
+
+    path = np.asarray(mat_data["q_homing"], dtype=float)
+    all_jnames = _mat_joint_names(mat_data)
+    jnames = [name for name in all_jnames if name not in VIRTUAL_JOINTS]
+    if path.ndim != 2 or path.shape[0] != 7 + len(jnames):
+        raise ValueError(
+            "q_homing rows do not match floating base + MAT joint_names")
+
+    dt = float(np.asarray(mat_data["q_homing_dt"]).reshape(-1)[0])
+    if dt <= 0.0:
+        raise ValueError("q_homing_dt must be positive")
+
+    joint_path = [
+        {
+            name: float(path[7 + index, node])
+            for index, name in enumerate(jnames)
+            if name not in BASE_AND_WHEEL_JOINTS
+        }
+        for node in range(path.shape[1])
+    ]
+    return joint_path, dt
 
 
 def build_robot_interface(urdf: str, srdf: str):
@@ -97,6 +146,44 @@ def ramp_to_home(robot, home_joints: dict[str, float],
     return interp_map
 
 
+def replay_homing(robot, joint_path, dt, start_tolerance):
+    robot.sense()
+    reference_map = robot.qToMap(robot.getPositionReferenceFeedback())
+    first = joint_path[0]
+    start_error = max(
+        abs(reference_map[name] - target)
+        for name, target in first.items()
+    )
+    if start_error > start_tolerance:
+        raise RuntimeError(
+            "Robot does not match q_homing_start: "
+            f"maximum joint error {start_error:.4f} rad exceeds "
+            f"{start_tolerance:.4f} rad. Replan from the current state.")
+
+    for target in joint_path[1:]:
+        command_map = dict(reference_map)
+        command_map.update(target)
+        robot.setPositionReference(robot.mapToQ(command_map))
+        robot.move()
+        sleep(dt)
+
+    robot.sense()
+    return joint_path[-1]
+
+
+def hold_position(robot, target, duration, dt):
+    if duration <= 0.0:
+        return
+    command_map = robot.qToMap(robot.getPositionReferenceFeedback())
+    command_map.update(target)
+    command = robot.mapToQ(command_map)
+    for _ in range(max(1, int(duration / dt))):
+        robot.setPositionReference(command)
+        robot.move()
+        sleep(dt)
+    robot.sense()
+
+
 def print_tracking_error(robot, target_map: dict[str, float],
                          urdf: str, srdf: str):
     motor_map = robot.qToMap(robot.getJointPosition())
@@ -127,13 +214,25 @@ def print_tracking_error(robot, target_map: dict[str, float],
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Home weld joints to node 0 of the optimized trajectory.")
-    parser.add_argument("--mat-file", type=Path, default=DEFAULT_MAT_FILE)
+    parser.add_argument(
+        "--homing-trajectory",
+        type=Path,
+        help=(
+            "Planned homing MAT file to replay. Without it, interpolate "
+            "directly to the default welding trajectory start."
+        ),
+    )
     parser.add_argument("--duration", type=float, default=5.0)
     parser.add_argument("--dt", type=float, default=0.01)
 
     args = parser.parse_args(remove_ros_args(args=argv)[1:])
-    if not args.mat_file.exists():
-        parser.error(f"--mat-file does not exist: {args.mat_file}")
+    if (
+        args.homing_trajectory is not None
+        and not args.homing_trajectory.exists()
+    ):
+        parser.error(
+            "--homing-trajectory does not exist: "
+            f"{args.homing_trajectory}")
     if args.duration <= 0.0:
         parser.error("--duration must be positive")
     if args.dt <= 0.0:
@@ -144,13 +243,25 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv=None) -> None:
     raw_argv = sys.argv if argv is None else argv
     args = _parse_args(raw_argv)
+    trajectory_file = args.homing_trajectory or DEFAULT_MAT_FILE
 
     rclpy.init(args=raw_argv)
     try:
-        print(f"[home_to_weld_start] Loading home target from {args.mat_file}")
-        home_map = load_home_map(args.mat_file)
+        print(
+            "[home_to_weld_start] Loading home target from "
+            f"{trajectory_file}")
+        home_map = load_home_map(trajectory_file)
         if not home_map:
             raise RuntimeError("No weld joints found in MAT trajectory.")
+        planned = (
+            load_planned_homing(trajectory_file)
+            if args.homing_trajectory is not None
+            else None
+        )
+        if args.homing_trajectory is not None and planned is None:
+            raise RuntimeError(
+                "The homing trajectory has no q_homing. "
+                "Run plan_homing_from_mat.py first.")
 
         print("[home_to_weld_start] Waiting for robot description...")
         urdf, srdf = fetch_robot_description(
@@ -177,12 +288,31 @@ def main(argv=None) -> None:
             name: home_map[name]
             for name in commanded_joints
         }
-        print(
-            f"[home_to_weld_start] Homing {commanded_joints} "
-            f"over {args.duration:.2f}s")
-
         command_weld_position_mode(robot, commanded_joints)
-        final_target = ramp_to_home(robot, home_joints, args.duration, args.dt)
+        if planned is None:
+            print(
+                f"[home_to_weld_start] Direct homing {commanded_joints} "
+                f"over {args.duration:.2f}s")
+            final_target = ramp_to_home(
+                robot, home_joints, args.duration, args.dt)
+            command_dt = args.dt
+        else:
+            joint_path, planned_dt = planned
+            joint_path = [
+                {
+                    name: target[name]
+                    for name in commanded_joints
+                }
+                for target in joint_path
+            ]
+            print(
+                "[home_to_weld_start] Replaying planned compact homing: "
+                f"{len(joint_path)} nodes, dt={planned_dt:.4f}s")
+            final_target = replay_homing(
+                robot, joint_path, planned_dt, PLANNED_START_TOLERANCE)
+            command_dt = planned_dt
+        hold_position(
+            robot, final_target, FINAL_HOLD_DURATION, command_dt)
         print_tracking_error(robot, final_target, urdf, srdf)
         print("[home_to_weld_start] Homing complete.")
     finally:

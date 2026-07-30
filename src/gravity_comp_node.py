@@ -92,7 +92,7 @@ class GravityCompNode(Node):
         gcomp_map = self.model.vToMap(self.model.computeGravityCompensation())
         msg = JointCommand()
         msg.header.stamp.sec, msg.header.stamp.nanosec = _stamp_from_xbot_time(
-            self.robot.getTimestamp())
+            self.robot.getStateTimestamp())
         msg.name = list(self.gravity_comp_joints)
         msg.effort = [
             float(gcomp_map[name])

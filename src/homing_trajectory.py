@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+import math
+import xml.etree.ElementTree as ET
 
 import casadi as cs
 import numpy as np
@@ -10,11 +12,21 @@ from xbot2_interface import pyxbot2_interface as xbi
 from xbot2_interface.pyaffine3 import Affine3
 
 
-ARM_GUIDE_FRAMES = (
+ARM_GUIDE_FRAME_CANDIDATES = (
     "J1_E_stator",
     "L_1_E",
     "J2_E_stator",
     "L_2_E",
+    "J3_E_stator",
+    "L_3_E",
+    "J4_E_stator",
+    "L_4_E",
+    "J5_E_stator",
+    "L_5_E",
+    "J6_E_stator",
+    "L_6_E",
+    "J7_E_stator",
+    "L_7_E",
     "J1_F_stator",
     "L_1_F",
     "J2_F_stator",
@@ -30,15 +42,20 @@ ARM_GUIDE_FRAMES = (
     "J6_F_stator",
     "L_6_F",
 )
-TOOL_SPHERES = (
+TOOL_SPHERE_CANDIDATES = (
+    ("end_effector_E", (0.0, 0.0, 0.0), 0.15),
+    ("ee_E", (0.0, 0.0, 0.0), 0.1),
+    ("L_7_E", (0.1, 0.0, 0.0), 0.1),
     ("end_effector_F", (0.0, 0.0, 0.0), 0.15),
     ("ee_F", (0.0, 0.0, 0.0), 0.1),
     ("L_6_F", (0.1, 0.0, 0.0), 0.1),
 )
 DEFAULT_INFLATION_RADIUS = 0.05
 DEFAULT_TOOL_APPROACH_NODES = 5
-DEFAULT_MOTION_WEIGHT = 10.0
+DEFAULT_MOTION_WEIGHT = 5.0
 DEFAULT_ACCEL_WEIGHT = 1.0
+DEFAULT_COMPACT_WEIGHT = 0.0
+DEFAULT_CARTESIAN_MOTION_WEIGHT = 10.0
 DEFAULT_MAX_JOINT_STEP = 1.0
 DEFAULT_MAX_JOINT_ACCEL_STEP = 0.5
 DEFAULT_IPOPT_PRINT_LEVEL = 5
@@ -50,6 +67,25 @@ class HomingTrajectory:
     q: np.ndarray
     dt: float
     method: str
+
+
+def model_homing_geometry(urdf):
+    links = {
+        link.attrib["name"]
+        for link in ET.fromstring(urdf).findall("link")
+        if "name" in link.attrib
+    }
+    guide_frames = tuple(
+        frame for frame in ARM_GUIDE_FRAME_CANDIDATES
+        if frame in links
+    )
+    tool_spheres = tuple(
+        sphere for sphere in TOOL_SPHERE_CANDIDATES
+        if sphere[0] in links
+    )
+    if not guide_frames:
+        raise RuntimeError("No arm guide frames exist in the current URDF")
+    return guide_frames, tool_spheres
 
 
 def _pipe_axis(orientation):
@@ -156,7 +192,8 @@ def _first_collision(path_q, checker):
 
 def _pipe_clearance_constraints(prb, q, kin_dyn, center, radius, orientation,
                                 clearance, inflation_radius,
-                                tool_approach_nodes, nodes):
+                                tool_approach_nodes, nodes, guide_frames,
+                                tool_spheres):
     axis = cs.DM(_pipe_axis(orientation))
     pipe_center = cs.DM(center)
     arm_nodes = range(1, nodes)
@@ -185,9 +222,9 @@ def _pipe_clearance_constraints(prb, q, kin_dyn, center, radius, orientation,
             constraint_nodes,
         )
 
-    for frame in ARM_GUIDE_FRAMES:
+    for frame in guide_frames:
         add_frame_constraint(frame, arm_nodes)
-    for idx, (frame, offset, sphere_radius) in enumerate(TOOL_SPHERES):
+    for idx, (frame, offset, sphere_radius) in enumerate(tool_spheres):
         fk = kin_dyn.fk(frame)(q=q)
         sphere_center = fk["ee_pos"] + cs.mtimes(fk["ee_rot"], cs.DM(offset))
         add_constraint(
@@ -198,11 +235,39 @@ def _pipe_clearance_constraints(prb, q, kin_dyn, center, radius, orientation,
         )
 
 
+def _compact_motion_residuals(prb, q, kin_dyn, guide_frames, nodes,
+                              compact_weight, cartesian_motion_weight):
+    if compact_weight <= 0.0 and cartesian_motion_weight <= 0.0:
+        return
+
+    root_position = kin_dyn.fk(guide_frames[0])(q=q)["ee_pos"]
+    compact_scale = math.sqrt(max(0.0, compact_weight))
+    motion_scale = math.sqrt(max(0.0, cartesian_motion_weight))
+
+    for frame in guide_frames[1:]:
+        fk = kin_dyn.fk(frame)
+        position = fk(q=q)["ee_pos"]
+        if compact_weight > 0.0:
+            prb.createResidual(
+                f"keep_{frame}_compact",
+                compact_scale * (position - root_position),
+                nodes=range(1, nodes),
+            )
+        if cartesian_motion_weight > 0.0:
+            next_position = fk(q=q.getVarOffset(1))["ee_pos"]
+            prb.createResidual(
+                f"min_{frame}_cartesian_motion",
+                motion_scale * (next_position - position),
+                nodes=range(nodes),
+            )
+
+
 def _plan_horizon(kin_dyn, q_start, q_goal, center, radius, orientation,
                   clearance, inflation_radius, motion_weight,
-                  accel_weight, max_joint_step, max_joint_accel_step,
-                  tool_approach_nodes, ipopt_print_level,
-                  initial_guess_mode, nodes):
+                  accel_weight, compact_weight, cartesian_motion_weight,
+                  max_joint_step, max_joint_accel_step, tool_approach_nodes,
+                  ipopt_print_level, initial_guess_mode, nodes, guide_frames,
+                  tool_spheres):
     print("[homing_trajectory] Building Horizon problem...", flush=True)
     prb = Problem(nodes, casadi_type=cs.SX)
     prb.setDt(1.0 / nodes)
@@ -268,15 +333,19 @@ def _plan_horizon(kin_dyn, q_start, q_goal, center, radius, orientation,
             nodes=range(nodes - 1),
         )
         accel_constraint.setBounds(-max_accel, max_accel)
+    _compact_motion_residuals(
+        prb, q, kin_dyn, guide_frames, nodes,
+        compact_weight, cartesian_motion_weight)
     print(
         "[homing_trajectory] Adding pipe clearance constraints: "
-        f"arm_frames={len(ARM_GUIDE_FRAMES)}, "
-        f"tool_spheres={len(TOOL_SPHERES)}",
+        f"arm_frames={len(guide_frames)}, "
+        f"tool_spheres={len(tool_spheres)}",
         flush=True,
     )
     _pipe_clearance_constraints(
         prb, q, kin_dyn, center, radius, orientation, clearance,
-        inflation_radius, tool_approach_nodes, nodes)
+        inflation_radius, tool_approach_nodes, nodes, guide_frames,
+        tool_spheres)
 
     print("[homing_trajectory] Creating IPOPT solver...", flush=True)
     solver = Solver.make_solver("ipopt", prb, {
@@ -294,12 +363,14 @@ def _plan_horizon(kin_dyn, q_start, q_goal, center, radius, orientation,
 
 def plan_homing_trajectory(urdf, srdf, kin_dyn, q_start, q_goal, pipe_center,
                            pipe_radius, pipe_length, pipe_gap,
-                           pipe_orientation, duration=5.0, dt=0.02,
+                           pipe_orientation, duration=5.0, dt=0.01,
                            planner_nodes=30, clearance=0.0,
                            inflation_radius=DEFAULT_INFLATION_RADIUS,
                            tool_approach_nodes=DEFAULT_TOOL_APPROACH_NODES,
                            motion_weight=DEFAULT_MOTION_WEIGHT,
                            accel_weight=DEFAULT_ACCEL_WEIGHT,
+                           compact_weight=DEFAULT_COMPACT_WEIGHT,
+                           cartesian_motion_weight=DEFAULT_CARTESIAN_MOTION_WEIGHT,
                            max_joint_step=DEFAULT_MAX_JOINT_STEP,
                            max_joint_accel_step=DEFAULT_MAX_JOINT_ACCEL_STEP,
                            ipopt_print_level=DEFAULT_IPOPT_PRINT_LEVEL,
@@ -313,6 +384,7 @@ def plan_homing_trajectory(urdf, srdf, kin_dyn, q_start, q_goal, pipe_center,
         q_goal[:7] = q_start[:7]
     pipe_center = np.asarray(pipe_center, dtype=float).reshape(3)
     pipe_orientation = np.asarray(pipe_orientation, dtype=float).reshape(4)
+    guide_frames, tool_spheres = model_homing_geometry(urdf)
     steps = max(1, int(round(duration / dt)))
     checker = _PipeChecker(
         urdf, srdf, pipe_center, pipe_radius, pipe_length, pipe_gap,
@@ -324,23 +396,35 @@ def plan_homing_trajectory(urdf, srdf, kin_dyn, q_start, q_goal, pipe_center,
         f"{steps + 1} samples, dt={duration / steps:.4f}s"
     )
     collision = _first_collision(direct, checker)
-    if collision is None:
+    optimize_compactness = (
+        compact_weight > 0.0 or cartesian_motion_weight > 0.0
+    )
+    if collision is None and not optimize_compactness:
         print("[homing_trajectory] Direct path accepted.")
         return HomingTrajectory(q=direct, dt=duration / steps, method="direct")
 
-    node, pairs = collision
-    print(
-        "[homing_trajectory] Direct path collides at "
-        f"sample {node}/{direct.shape[1] - 1}: {pairs}"
-    )
-    if node in (0, direct.shape[1] - 1):
-        raise RuntimeError(
-            f"Homing endpoint collides with the pipe at node {node}: {pairs}")
+    if collision is None:
+        print(
+            "[homing_trajectory] Direct path is collision-free; "
+            "optimizing compactness."
+        )
+    else:
+        node, pairs = collision
+        print(
+            "[homing_trajectory] Direct path collides at "
+            f"sample {node}/{direct.shape[1] - 1}: {pairs}"
+        )
+        if node in (0, direct.shape[1] - 1):
+            raise RuntimeError(
+                f"Homing endpoint collides with the pipe at node {node}: "
+                f"{pairs}")
 
     print(
         "[homing_trajectory] Solving Horizon homing: "
         f"nodes={planner_nodes}, inflation_radius={inflation_radius:.4f}, "
         f"tool_approach_nodes={tool_approach_nodes}, "
+        f"compact_weight={compact_weight:.4f}, "
+        f"cartesian_motion_weight={cartesian_motion_weight:.4f}, "
         f"max_joint_step={max_joint_step:.4f}, "
         f"max_joint_accel_step={max_joint_accel_step:.4f}, "
         f"ipopt_print_level={ipopt_print_level}, "
@@ -349,8 +433,9 @@ def plan_homing_trajectory(urdf, srdf, kin_dyn, q_start, q_goal, pipe_center,
     planned = _plan_horizon(
         kin_dyn, q_start, q_goal, pipe_center, pipe_radius, pipe_orientation,
         clearance, inflation_radius, motion_weight, accel_weight,
-        max_joint_step, max_joint_accel_step, tool_approach_nodes,
-        ipopt_print_level, initial_guess_mode, planner_nodes)
+        compact_weight, cartesian_motion_weight, max_joint_step,
+        max_joint_accel_step, tool_approach_nodes, ipopt_print_level,
+        initial_guess_mode, planner_nodes, guide_frames, tool_spheres)
     dense = _resample(planned, steps)
     print(
         "[homing_trajectory] Horizon solved; validating dense replay: "

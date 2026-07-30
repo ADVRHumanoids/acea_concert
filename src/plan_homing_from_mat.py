@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
+"""Plan a compact, collision-checked path to the weld trajectory start.
+
+Usage while weld_sim.launch.py is running:
+    ros2 run acea_concert plan_homing_from_mat.py \
+        --initial-pose-from-gazebo \
+        --output /tmp/weld_concert_compact.mat --duration 8
+"""
 
 import argparse
 import select
 import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from time import monotonic, sleep
 
@@ -12,6 +20,8 @@ from scipy.io import loadmat, savemat
 
 from homing_trajectory import (
     DEFAULT_ACCEL_WEIGHT,
+    DEFAULT_CARTESIAN_MOTION_WEIGHT,
+    DEFAULT_COMPACT_WEIGHT,
     DEFAULT_INFLATION_RADIUS,
     DEFAULT_INITIAL_GUESS_MODE,
     DEFAULT_IPOPT_PRINT_LEVEL,
@@ -19,25 +29,27 @@ from homing_trajectory import (
     DEFAULT_MAX_JOINT_STEP,
     DEFAULT_MOTION_WEIGHT,
     DEFAULT_TOOL_APPROACH_NODES,
-    TOOL_SPHERES,
     _pipe_halves,
+    model_homing_geometry,
     plan_homing_trajectory,
 )
 
 
 PATH_TO_ACEA_CONCERT = Path("/home/user/concert_ws/src/acea_concert")
 DEFAULT_MAT_FILE = PATH_TO_ACEA_CONCERT / "mat_files" / "weld_concert.mat"
-VIRTUAL_JOINTS = {"universe", "reference"}
-ARM_HOME_Q = {
-    "J1_E": -np.pi / 2,
-    "J2_E": 0.0,
-    "J1_F": 0.0,
-    "J2_F": 0.0,
-    "J3_F": 0.0,
-    "J4_F": 0.0,
-    "J5_F": 0.0,
-    "J6_F": 0.0,
-}
+
+# Planner tuning: edit these values here, not on the command line.
+PIPE_CLEARANCE = 0.0  # Extra exact collision clearance around each pipe [m].
+PIPE_INFLATION_RADIUS = DEFAULT_INFLATION_RADIUS  # Guide-frame margin [m].
+TOOL_APPROACH_NODES = DEFAULT_TOOL_APPROACH_NODES  # Relax tool clearance near goal.
+JOINT_MOTION_WEIGHT = DEFAULT_MOTION_WEIGHT  # Penalize joint travel.
+JOINT_ACCEL_WEIGHT = DEFAULT_ACCEL_WEIGHT  # Penalize joint acceleration.
+COMPACT_WEIGHT = DEFAULT_COMPACT_WEIGHT  # Pull links toward the shoulder.
+CARTESIAN_MOTION_WEIGHT = DEFAULT_CARTESIAN_MOTION_WEIGHT  # Penalize link travel.
+MAX_JOINT_STEP = DEFAULT_MAX_JOINT_STEP  # Per-node joint change [rad].
+MAX_JOINT_ACCEL_STEP = DEFAULT_MAX_JOINT_ACCEL_STEP  # Joint second difference.
+IPOPT_PRINT_LEVEL = DEFAULT_IPOPT_PRINT_LEVEL  # 0 is quiet; 5 shows iterations.
+INITIAL_GUESS_MODE = DEFAULT_INITIAL_GUESS_MODE  # linear or goal-after-start.
 
 
 def _scalar(data, key):
@@ -72,30 +84,67 @@ def _make_robot_description():
     return urdf, srdf_path.read_text()
 
 
-def _homing_start_q(kin_dyn, q_goal):
+def _homing_start_q(kin_dyn, q_goal, srdf):
     q_start = np.asarray(q_goal, dtype=float).reshape(-1).copy()
-    actuated_names = [
-        str(name).strip() for name in kin_dyn.joint_names()
-        if str(name).strip() not in VIRTUAL_JOINTS
-    ]
-    missing = []
-    for name, value in ARM_HOME_Q.items():
-        if name not in actuated_names:
-            missing.append(name)
+    root = ET.fromstring(srdf)
+    home_state = next(
+        (
+            state for state in root.findall("group_state")
+            if state.attrib.get("name") == "home"
+        ),
+        None,
+    )
+    if home_state is None:
+        raise ValueError("Current SRDF has no 'home' group state")
+
+    applied = []
+    for joint in home_state.findall("joint"):
+        name = joint.attrib.get("name")
+        if name is None or kin_dyn.joint_nq(name) != 1:
             continue
-        q_start[7 + actuated_names.index(name)] = value
-    if missing:
-        raise ValueError(f"Arm home joints not found in model: {missing}")
+        idx = kin_dyn.joint_iq(name)
+        if idx >= q_start.size:
+            continue
+        q_start[idx] = float(joint.attrib["value"])
+        applied.append(name)
+    if not applied:
+        raise ValueError("No SRDF home joints exist in the current model")
     return q_start
 
 
-def _gazebo_robot_pose(timeout_s):
+def _gazebo_scene_pose(timeout_s):
     from gap_pose_publisher import (
+        GAP_MODEL_LEFT,
+        GAP_MODEL_RIGHT,
         GZ_POSE_TOPIC,
         ROBOT_BASE_LINK,
         ROBOT_MODEL,
         _parse_pose_v,
     )
+
+    def scene_from_poses(poses):
+        robot_name = next(
+            (
+                name for name in (ROBOT_BASE_LINK, ROBOT_MODEL)
+                if name in poses
+            ),
+            None,
+        )
+        if (
+            robot_name is None
+            or GAP_MODEL_LEFT not in poses
+            or GAP_MODEL_RIGHT not in poses
+        ):
+            return None
+
+        robot_xyz, robot_quat = poses[robot_name]
+        left_xyz, left_quat = poses[GAP_MODEL_LEFT]
+        right_xyz, _ = poses[GAP_MODEL_RIGHT]
+        return (
+            np.concatenate([robot_xyz, robot_quat]),
+            0.5 * (left_xyz + right_xyz),
+            left_quat,
+        )
 
     deadline = monotonic() + timeout_s
     proc = subprocess.Popen(
@@ -118,25 +167,23 @@ def _gazebo_robot_pose(timeout_s):
 
             if line.startswith("header {") and len(buffer) > 1:
                 poses = _parse_pose_v("".join(buffer))
-                for name in (ROBOT_BASE_LINK, ROBOT_MODEL):
-                    if name in poses:
-                        xyz, quat = poses[name]
-                        return np.concatenate([xyz, quat])
+                scene = scene_from_poses(poses)
+                if scene is not None:
+                    return scene
                 buffer = [line]
             else:
                 buffer.append(line)
 
         poses = _parse_pose_v("".join(buffer))
-        for name in (ROBOT_BASE_LINK, ROBOT_MODEL):
-            if name in poses:
-                xyz, quat = poses[name]
-                return np.concatenate([xyz, quat])
+        scene = scene_from_poses(poses)
+        if scene is not None:
+            return scene
     finally:
         proc.terminate()
 
     raise RuntimeError(
-        "Could not read robot pose from Gazebo "
-        f"({ROBOT_BASE_LINK} or {ROBOT_MODEL}) within {timeout_s:.1f}s"
+        "Could not read robot and both pipe poses from Gazebo within "
+        f"{timeout_s:.1f}s"
     )
 
 
@@ -249,7 +296,8 @@ def _show_homing_rviz(urdf, kin_dyn, homing, pipe_center, pipe_radius,
             ]
             marker_args.extend(str(value) for value in color)
             pipe_markers.append(subprocess.Popen(marker_args))
-    for idx, (frame, offset, radius) in enumerate(TOOL_SPHERES):
+    _, tool_spheres = model_homing_geometry(urdf)
+    for idx, (frame, offset, radius) in enumerate(tool_spheres):
         pipe_markers.append(subprocess.Popen([
             "python3",
             str(sphere_marker),
@@ -423,57 +471,8 @@ def main():
     )
     parser.add_argument("--gazebo-pose-timeout", type=float, default=5.0)
     parser.add_argument("--duration", type=float, default=5.0)
-    parser.add_argument("--dt", type=float, default=0.02)
+    parser.add_argument("--dt", type=float, default=0.01)
     parser.add_argument("--planner-nodes", type=int, default=30)
-    parser.add_argument("--clearance", type=float, default=0.0)
-    parser.add_argument(
-        "--inflation-radius",
-        type=float,
-        default=DEFAULT_INFLATION_RADIUS,
-        help="Conservative pipe inflation for arm guide constraints.",
-    )
-    parser.add_argument(
-        "--tool-approach-nodes",
-        type=int,
-        default=DEFAULT_TOOL_APPROACH_NODES,
-        help="Last Horizon nodes where tool-sphere pipe clearance is relaxed.",
-    )
-    parser.add_argument(
-        "--motion-weight",
-        type=float,
-        default=DEFAULT_MOTION_WEIGHT,
-        help="Weight for minimizing arm joint motion between nodes.",
-    )
-    parser.add_argument(
-        "--accel-weight",
-        type=float,
-        default=DEFAULT_ACCEL_WEIGHT,
-        help="Weight for smoothing arm joint acceleration.",
-    )
-    parser.add_argument(
-        "--max-joint-step",
-        type=float,
-        default=DEFAULT_MAX_JOINT_STEP,
-        help="Maximum arm joint change between Horizon nodes; <=0 disables.",
-    )
-    parser.add_argument(
-        "--max-joint-accel-step",
-        type=float,
-        default=DEFAULT_MAX_JOINT_ACCEL_STEP,
-        help="Maximum arm joint second difference between Horizon nodes; <=0 disables.",
-    )
-    parser.add_argument(
-        "--ipopt-print-level",
-        type=int,
-        default=DEFAULT_IPOPT_PRINT_LEVEL,
-        help="IPOPT verbosity; use 5 to show iteration steps.",
-    )
-    parser.add_argument(
-        "--initial-guess",
-        choices=("linear", "goal-after-start"),
-        default=DEFAULT_INITIAL_GUESS_MODE,
-        help="Initial guess for Horizon q nodes.",
-    )
     parser.add_argument(
         "--rviz",
         action="store_true",
@@ -497,26 +496,33 @@ def main():
     pipe_orientation = _vector(data, "orientation_pipe", 4)
     if "weld_standoff_from_pipe" in data:
         standoff = _scalar(data, "weld_standoff_from_pipe")
-        if args.clearance >= standoff:
+        if PIPE_CLEARANCE >= standoff:
             print(
-                "[plan_homing_from_mat] Warning: --clearance is >= "
+                "[plan_homing_from_mat] Warning: PIPE_CLEARANCE is >= "
                 "weld_standoff_from_pipe; the weld-start pose may be "
                 "intentionally closer than this."
             )
 
     urdf, srdf = _make_robot_description()
     kin_dyn = casadi_kin_dyn.CasadiKinDyn(urdf)
-    q_start = _homing_start_q(kin_dyn, q_goal)
+    q_start = _homing_start_q(kin_dyn, q_goal, srdf)
     if args.initial_pose_from_gazebo:
-        q_start[:7] = _gazebo_robot_pose(args.gazebo_pose_timeout)
+        gazebo_robot_pose, pipe_center, pipe_orientation = (
+            _gazebo_scene_pose(args.gazebo_pose_timeout))
+        q_start[:7] = gazebo_robot_pose
         q_start, xbot_joints = _apply_xbot_joint_positions(
             q_start,
             kin_dyn,
             _xbot_joint_positions(args.gazebo_pose_timeout),
         )
         print(
-            "[plan_homing_from_mat] Using Gazebo base pose for q_homing_start: "
+            "[plan_homing_from_mat] Using Gazebo scene for q_homing_start: "
             f"{q_start[:7].tolist()}"
+        )
+        print(
+            "[plan_homing_from_mat] Using Gazebo pipe pose: "
+            f"center={pipe_center.tolist()}, "
+            f"orientation={pipe_orientation.tolist()}"
         )
         print(
             "[plan_homing_from_mat] Using XBot joint state for "
@@ -547,7 +553,7 @@ def main():
     for attempt, (planner_nodes, inflation_radius) in enumerate(
             _retry_settings(
                 args.planner_nodes,
-                args.inflation_radius,
+                PIPE_INFLATION_RADIUS,
                 args.retry,
             ),
             start=1):
@@ -555,9 +561,9 @@ def main():
             f"[plan_homing_from_mat] Attempt {attempt}: "
             f"planner_nodes={planner_nodes}, "
             f"inflation_radius={inflation_radius:.4f}, "
-            f"tool_approach_nodes={args.tool_approach_nodes}, "
-            f"ipopt_print_level={args.ipopt_print_level}, "
-            f"initial_guess={args.initial_guess}"
+            f"tool_approach_nodes={TOOL_APPROACH_NODES}, "
+            f"ipopt_print_level={IPOPT_PRINT_LEVEL}, "
+            f"initial_guess={INITIAL_GUESS_MODE}"
         )
         try:
             homing = plan_homing_trajectory(
@@ -574,15 +580,17 @@ def main():
                 duration=args.duration,
                 dt=args.dt,
                 planner_nodes=planner_nodes,
-                clearance=args.clearance,
+                clearance=PIPE_CLEARANCE,
                 inflation_radius=inflation_radius,
-                tool_approach_nodes=args.tool_approach_nodes,
-                motion_weight=args.motion_weight,
-                accel_weight=args.accel_weight,
-                max_joint_step=args.max_joint_step,
-                max_joint_accel_step=args.max_joint_accel_step,
-                ipopt_print_level=args.ipopt_print_level,
-                initial_guess_mode=args.initial_guess,
+                tool_approach_nodes=TOOL_APPROACH_NODES,
+                motion_weight=JOINT_MOTION_WEIGHT,
+                accel_weight=JOINT_ACCEL_WEIGHT,
+                compact_weight=COMPACT_WEIGHT,
+                cartesian_motion_weight=CARTESIAN_MOTION_WEIGHT,
+                max_joint_step=MAX_JOINT_STEP,
+                max_joint_accel_step=MAX_JOINT_ACCEL_STEP,
+                ipopt_print_level=IPOPT_PRINT_LEVEL,
+                initial_guess_mode=INITIAL_GUESS_MODE,
                 candidate_callback=lambda candidate, node, pairs: (
                     _ask_show_rejected_candidate(
                         args.ask_rviz_failures,
@@ -596,7 +604,7 @@ def main():
                         pipe_length,
                         pipe_gap,
                         pipe_orientation,
-                        args.clearance,
+                        PIPE_CLEARANCE,
                         inflation_radius,
                     )
                 ),
@@ -627,18 +635,25 @@ def main():
         "q_homing_dt": homing.dt,
         "q_homing_duration": args.duration,
         "q_homing_method": homing.method,
-        "q_homing_pipe_clearance": args.clearance,
+        "q_homing_pipe_center_world": pipe_center,
+        "q_homing_pipe_orientation_world": pipe_orientation,
+        "q_homing_pipe_clearance": PIPE_CLEARANCE,
         "q_homing_inflation_radius": inflation_radius,
-        "q_homing_tool_approach_nodes": args.tool_approach_nodes,
+        "q_homing_tool_approach_nodes": TOOL_APPROACH_NODES,
         "q_homing_planner_nodes": planner_nodes,
-        "q_homing_motion_weight": args.motion_weight,
-        "q_homing_accel_weight": args.accel_weight,
-        "q_homing_max_joint_step": args.max_joint_step,
-        "q_homing_max_joint_accel_step": args.max_joint_accel_step,
-        "q_homing_ipopt_print_level": args.ipopt_print_level,
-        "q_homing_initial_guess": args.initial_guess,
+        "q_homing_motion_weight": JOINT_MOTION_WEIGHT,
+        "q_homing_accel_weight": JOINT_ACCEL_WEIGHT,
+        "q_homing_compact_weight": COMPACT_WEIGHT,
+        "q_homing_cartesian_motion_weight": CARTESIAN_MOTION_WEIGHT,
+        "q_homing_max_joint_step": MAX_JOINT_STEP,
+        "q_homing_max_joint_accel_step": MAX_JOINT_ACCEL_STEP,
+        "q_homing_ipopt_print_level": IPOPT_PRINT_LEVEL,
+        "q_homing_initial_guess": INITIAL_GUESS_MODE,
         "q_homing_tool_spheres": np.asarray(
-            [(*offset, radius) for _, offset, radius in TOOL_SPHERES],
+            [
+                (*offset, radius)
+                for _, offset, radius in model_homing_geometry(urdf)[1]
+            ],
             dtype=float,
         ),
     })
@@ -650,7 +665,7 @@ def main():
     if args.rviz:
         _show_homing_rviz(
             urdf, kin_dyn, homing, pipe_center, pipe_radius, pipe_length,
-            pipe_gap, pipe_orientation, args.clearance, inflation_radius)
+            pipe_gap, pipe_orientation, PIPE_CLEARANCE, inflation_radius)
 
 
 if __name__ == "__main__":

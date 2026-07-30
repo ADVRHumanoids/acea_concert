@@ -76,10 +76,11 @@ def _add_wrist_camera(writer: UrdfWriter) -> None:
     )
     camera = ET.SubElement(
         writer.root,
-        "xacro:add_realsense_d_camera",
+        "xacro:add_rgbd_camera",
         name=CAMERA_NAME,
         parent_name="ee_F" if USE_PRISMATIC else "ee_E",
-        add_gazebo_sensor="true",
+        publish_tf="true",
+        gazebo_urdf="true",
     )
     ET.SubElement(
         camera,

@@ -193,12 +193,17 @@ These are already the wrapper defaults: `optimized_robot_pose:=true`,
 `junction_visual_mode:=inner_wall`, `xbot2:=true`, `rviz:=false`, and the
 unused front-camera bridges disabled. The two arguments in the command above
 are kept explicit so the geometry source and optimized placement are obvious.
+The wrapper also starts XBot2 only after the Gazebo clock is active and switches
+`ros_ctrl` to `Running` as soon as XBot2 is ready.
+
+The original launcher keeps `gui:=true` as its default. In a headless container
+or an SSH session without working X11 forwarding, add `gui:=false`; otherwise
+Qt will fail before the Gazebo server can stay up.
 
 `optimized_robot_pose` places the pipe relative to the optimized welding pose;
 it does **not** move the arm joints. Before checking the camera image or the
-detector, enable ROS control and run the project's gravity-compensation and
-homing sequence. A sky/background-only `camera_F` image before homing is
-expected and is not a detector failure.
+detector, run the project's homing sequence. A sky/background-only `camera_F`
+image before homing is expected and is not a detector failure.
 
 #### Welding-tool camera extrinsic
 
@@ -498,6 +503,13 @@ Validated results (2026-07-19, idle host):
 Terminal A (simulation, or skip on the real robot):
 
 ```bash
+
+source /home/user/env/bin/activate
+source /opt/ros/jazzy/setup.bash
+source install/setup.bash
+source setup.bash
+source /opt/xbot/setup.sh
+
 ros2 launch acea_concert weld_sim_perception.launch.py \
   mat_file:=/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat \
   optimized_robot_pose:=true

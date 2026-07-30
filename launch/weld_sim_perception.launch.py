@@ -293,6 +293,11 @@ def generate_launch_description():
             description="Use the optimized robot/pipe pose from mat_file.",
         ),
         DeclareLaunchArgument(
+            "realsense",
+            default_value="false",
+            description="Disable the unused mobile-base RealSense cameras.",
+        ),
+        DeclareLaunchArgument(
             "start_front_camera_bridges",
             default_value="false",
             description="Disable unused front-camera bridges in perception simulation.",

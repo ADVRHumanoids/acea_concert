@@ -25,10 +25,10 @@ is_floating_base = True
 WELD_TORCH_CAMERA_NAME = "camera_F"
 WELD_TORCH_CAMERA_XYZ = [0.1, 0.0, -0.05]
 WELD_TORCH_CAMERA_RPY = [3.141593, -1.4, 0.0]  # 180 deg roll keeps the view direction, flips camera upright
-WELD_TORCH_EE_POSE = [
-    [0.4975711, 0.0, -0.8674232, -0.02],
+WELD_TORCH_GEOMETRY_POSE = [
+    [1.0, 0.0, 0.0, 0.1626569],
     [0.0, 1.0, 0.0, 0.0],
-    [0.8674232, 0.0, 0.4975711, 0.2715 - 0.02184],
+    [0.0, 0.0, 1.0, -0.1560749],
     [0, 0, 0, 1],
 ]
 
@@ -137,8 +137,11 @@ prismatic_dict = urdf_writer.modular_resources_manager.available_modules_dict['e
 prismatic_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['p'] = 5000.0
 prismatic_dict['joints'][0]['control_parameters']['xbot_gz']['pid']['d'] = 80.0
 
-weld_torch_dict = urdf_writer.modular_resources_manager.available_modules_dict['experimental/module_weld_torch_dummy.json']
-# weld_torch_dict['bodies'][0]['connectors'][1]['pose'] = WELD_TORCH_EE_POSE
+weld_torch_body = urdf_writer.modular_resources_manager.available_modules_dict['experimental/module_weld_torch_dummy_mockup.json']['bodies'][0]
+weld_torch_body['visual'][0]['pose'] = WELD_TORCH_GEOMETRY_POSE
+weld_torch_body['collision'][0]['pose'] = WELD_TORCH_GEOMETRY_POSE
+weld_torch_body['collision'][1]['pose'] = WELD_TORCH_GEOMETRY_POSE
+weld_torch_body['collision'][2]['pose'] = WELD_TORCH_GEOMETRY_POSE
 
 if args.use_prismatic_joint:
     data = urdf_writer.add_module('experimental/module_joint_yaw_XL_concert.json', offsets={'x': 0.0, 'y': 0.0, 'z': 0.0, 'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0})

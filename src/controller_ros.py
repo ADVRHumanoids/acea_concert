@@ -4,6 +4,7 @@ from time import monotonic
 import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
+from rclpy.executors import SingleThreadedExecutor
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Header
 from scipy.spatial.transform import Rotation as R
@@ -51,6 +52,8 @@ def fetch_robot_description(
         qos,
     )
 
+    executor = SingleThreadedExecutor()
+    executor.add_node(node)
     deadline = monotonic() + timeout_sec
     try:
         while rclpy.ok():
@@ -62,11 +65,13 @@ def fetch_robot_description(
                     "Failed to receive robot description topics. "
                     "Check QoS compatibility and that /xbotcore is running."
                 )
-            rclpy.spin_once(node, timeout_sec=0.1)
+            executor.spin_once(timeout_sec=0.1)
 
         raise RuntimeError(
             "ROS shut down while reading robot description topics.")
     finally:
+        executor.remove_node(node)
+        executor.shutdown()
         node.destroy_node()
 
 

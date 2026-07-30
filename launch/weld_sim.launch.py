@@ -102,9 +102,9 @@ PIPE_SDF_TEMPLATE = """<?xml version="1.0" ?>
           </cylinder>
         </geometry>
         <material>
-          <ambient>{ambient}</ambient>
-          <diffuse>{diffuse}</diffuse>
-          <specular>{specular}</specular>
+          <ambient>0.4 0.4 0.4 1</ambient>
+          <diffuse>0.6 0.6 0.6 1</diffuse>
+          <specular>0.3 0.3 0.3 1</specular>
         </material>
       </visual>
       <collision name="pipe_collision">
@@ -120,55 +120,7 @@ PIPE_SDF_TEMPLATE = """<?xml version="1.0" ?>
 </sdf>"""
 
 
-PIPE_VISUAL_PRESETS = {
-    # Preserve the historical rendering exactly unless another preset is
-    # explicitly selected by a validation launch.
-    "legacy_gray": {
-        "ambient": "0.4 0.4 0.4 1",
-        "diffuse": "0.6 0.6 0.6 1",
-        "specular": "0.3 0.3 0.3 1",
-    },
-    # Approximate the painted orange pipe used in the real-camera trials.
-    # The simulation detector remains color-prior OFF, so this changes image
-    # formation without turning color into a hidden acquisition label.
-    "painted_orange": {
-        "ambient": "0.22 0.07 0.015 1",
-        "diffuse": "0.72 0.24 0.045 1",
-        "specular": "0.35 0.35 0.35 1",
-    },
-}
-
-
-def _rgba_launch_config(context, name):
-    raw = LaunchConfiguration(name).perform(context).replace(",", " ")
-    values = raw.split()
-    if len(values) != 4:
-        raise ValueError(
-            f"{name} must contain four RGBA values, received: {raw!r}"
-        )
-    rgba = [float(value) for value in values]
-    if not all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in rgba):
-        raise ValueError(f"{name} values must be finite and in [0, 1]: {raw!r}")
-    return " ".join(f"{value:.6g}" for value in rgba)
-
-
-def _pipe_visual_material(context):
-    preset = LaunchConfiguration("pipe_visual_preset").perform(context).strip().lower()
-    if preset in PIPE_VISUAL_PRESETS:
-        return PIPE_VISUAL_PRESETS[preset]
-    if preset == "custom":
-        return {
-            "ambient": _rgba_launch_config(context, "pipe_ambient_rgba"),
-            "diffuse": _rgba_launch_config(context, "pipe_diffuse_rgba"),
-            "specular": _rgba_launch_config(context, "pipe_specular_rgba"),
-        }
-    choices = ", ".join([*PIPE_VISUAL_PRESETS, "custom"])
-    raise ValueError(f"Unknown pipe_visual_preset={preset!r}; expected one of: {choices}")
-
-
-def _pipe_geometry_from_mat(data, material=None):
-    if material is None:
-        material = PIPE_VISUAL_PRESETS["legacy_gray"]
+def _pipe_geometry_from_mat(data):
     pipe_center = _mat_vector(data, "pos_center_pipe")
     pipe_radius = _mat_scalar(data, "radius_pipe", 0.1)
     pipe_total_length = _mat_scalar(data, "length_pipe", 5.0)
@@ -181,13 +133,11 @@ def _pipe_geometry_from_mat(data, material=None):
             name="weld_pipe_left",
             radius=pipe_radius,
             length=pipe_half_length,
-            **material,
         ),
         "sdf_right": PIPE_SDF_TEMPLATE.format(
             name="weld_pipe_right",
             radius=pipe_radius,
             length=pipe_half_length,
-            **material,
         ),
     }
  
@@ -202,8 +152,7 @@ def _bool_launch_config(context, name):
  
 def _spawn_pipe_actions(context, *args, **kwargs):
     mat_file, selected_matdata = _load_mat_file(context)
-    pipe_material = _pipe_visual_material(context)
-    pipe = _pipe_geometry_from_mat(selected_matdata, pipe_material)
+    pipe = _pipe_geometry_from_mat(selected_matdata)
 
     if _bool_launch_config(context, "optimized_robot_pose"):
         pipe_spawn_x, pipe_spawn_y, pipe_y_axis_yaw = (
@@ -377,26 +326,6 @@ def generate_launch_description():
                               description="Pipe center Y in the robot nominal start frame [m]"),
         DeclareLaunchArgument("pipe_y_axis_yaw", default_value="0.0",
                               description="Yaw of the pipe/gap Y axis from nominal +Y around world Z [rad]"),
-        DeclareLaunchArgument(
-            "pipe_visual_preset",
-            default_value="legacy_gray",
-            description="Pipe rendering: legacy_gray, painted_orange, or custom.",
-        ),
-        DeclareLaunchArgument(
-            "pipe_ambient_rgba",
-            default_value=PIPE_VISUAL_PRESETS["legacy_gray"]["ambient"],
-            description="Custom pipe ambient RGBA; used with pipe_visual_preset:=custom.",
-        ),
-        DeclareLaunchArgument(
-            "pipe_diffuse_rgba",
-            default_value=PIPE_VISUAL_PRESETS["legacy_gray"]["diffuse"],
-            description="Custom pipe diffuse RGBA; used with pipe_visual_preset:=custom.",
-        ),
-        DeclareLaunchArgument(
-            "pipe_specular_rgba",
-            default_value=PIPE_VISUAL_PRESETS["legacy_gray"]["specular"],
-            description="Custom pipe specular RGBA; used with pipe_visual_preset:=custom.",
-        ),
 
         robot_state_publisher_node,
         front_camera_bridge_node,

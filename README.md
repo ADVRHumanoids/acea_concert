@@ -480,11 +480,9 @@ Validated results (2026-07-19, idle host):
 Terminal A (simulation, or skip on the real robot):
 
 ```bash
-ros2 launch acea_concert weld_sim_v10_realistic_validation.launch.py \
-  gui:=true xbot2:=true rviz:=false optimized_robot_pose:=true \
+ros2 launch acea_concert weld_sim_perception.launch.py \
   mat_file:=/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat \
-  pipe_visual_preset:=painted_orange junction_visual_mode:=inner_wall \
-  start_front_camera_bridges:=false publish_robot_state_tf:=true
+  optimized_robot_pose:=true
 ```
 
 Terminal B (detector + pose bridge; use `camera_preset:=real` on the robot —

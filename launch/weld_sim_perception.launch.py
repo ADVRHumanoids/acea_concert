@@ -62,6 +62,41 @@ _BASE.MODULAR_DESCRIPTION = str(
 )
 
 
+def _configure_private_pipe_rendering():
+    """Use the painted pipe with both supported baseline launch revisions."""
+    if hasattr(_BASE, "PIPE_VISUAL_PRESETS"):
+        # The current baseline resolves pipe_visual_preset itself.
+        return
+
+    # The colleague's pre-preset weld_sim.launch.py has the historical gray
+    # values embedded directly in PIPE_SDF_TEMPLATE. This module is a private
+    # import, so replacing them affects only the perception wrapper; launching
+    # weld_sim.launch.py directly remains byte-for-byte unchanged.
+    template = _BASE.PIPE_SDF_TEMPLATE
+    replacements = {
+        "<ambient>0.4 0.4 0.4 1</ambient>": (
+            "<ambient>0.22 0.07 0.015 1</ambient>"
+        ),
+        "<diffuse>0.6 0.6 0.6 1</diffuse>": (
+            "<diffuse>0.72 0.24 0.045 1</diffuse>"
+        ),
+        "<specular>0.3 0.3 0.3 1</specular>": (
+            "<specular>0.35 0.35 0.35 1</specular>"
+        ),
+    }
+    for baseline, perception in replacements.items():
+        if baseline not in template:
+            raise RuntimeError(
+                "Unsupported baseline pipe material; missing token: "
+                f"{baseline}"
+            )
+        template = template.replace(baseline, perception)
+    _BASE.PIPE_SDF_TEMPLATE = template
+
+
+_configure_private_pipe_rendering()
+
+
 _JUNCTION_SDF = """<?xml version="1.0" ?>
 <sdf version="1.6">
   <model name="{model_name}">

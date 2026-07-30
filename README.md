@@ -200,13 +200,6 @@ detector, enable ROS control and run the project's gravity-compensation and
 homing sequence. A sky/background-only `camera_F` image before homing is
 expected and is not a detector failure.
 
-The perception wrapper deliberately does not modify `controller.py`,
-`home_to_weld_start.py`, or the XBot control policy. Verify the reported joint
-and end-effector homing errors before evaluating perception. If homing does not
-converge (for example because the expected XBot gravity-compensation plugin is
-not available), resolve that in the control stack rather than changing the
-camera pose or detector thresholds.
-
 After homing, launch perception in another sourced terminal:
 
 ```bash

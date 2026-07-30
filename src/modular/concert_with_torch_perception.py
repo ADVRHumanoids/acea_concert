@@ -10,6 +10,7 @@ canonical implementation.
 
 from __future__ import annotations
 
+import math
 import runpy
 import sys
 import xml.etree.ElementTree as ET
@@ -20,8 +21,50 @@ from modular.URDF_writer import UrdfWriter
 
 CANONICAL_GENERATOR = Path(__file__).resolve().with_name("concert_with_torch.py")
 CAMERA_NAME = "camera_F"
-CAMERA_XYZ = (0.05, 0.0, -0.20)
-CAMERA_RPY = (3.141593, -1.4, 0.0)
+
+# Camera calibration from:
+# docs/Useful Transformation matrix for the welding tool holder.pdf
+#
+# The PDF gives TOOL_BASE -> TOOL_TIP as +271.500 mm along Z, with no
+# rotation, and TOOL_BASE -> REALSENSE_CENTRE as:
+#
+#   R = [[ 0,       0.342020,  0.939693],
+#        [-1,       0,         0       ],
+#        [ 0,      -0.939693,  0.342020]]
+#   t = [-292.055, 0, 243.060] mm
+#
+# ``ee_E``/``ee_F`` is the functional TOOL_TIP frame.  The resulting optical
+# centre relative to that frame is therefore [-292.055, 0, -28.440] mm.  The
+# generic RealSense xacro does not attach its origin at the optical centre: it
+# attaches ``camera_F_bottom_screw_frame`` and then offsets ``camera_F_link``
+# by [0, 17.5, 12.5] mm.  Its final optical-frame rotation is also fixed at
+# RPY [-90, 0, -90] deg.  Solving those two fixed xacro transforms gives the
+# mount pose below: when the URDF chain is composed, camera_F_depth_optical_frame
+# exactly recovers the PDF REALSENSE_CENTRE pose.
+_TOOL_BASE_TO_TOOL_TIP_Z_M = 0.271500
+_TOOL_BASE_TO_REALSENSE_CENTRE_XYZ_M = (-0.292055, 0.0, 0.243060)
+_TOOL_TIP_TO_REALSENSE_CENTRE_XYZ_M = (
+    _TOOL_BASE_TO_REALSENSE_CENTRE_XYZ_M[0],
+    _TOOL_BASE_TO_REALSENSE_CENTRE_XYZ_M[1],
+    _TOOL_BASE_TO_REALSENSE_CENTRE_XYZ_M[2] - _TOOL_BASE_TO_TOOL_TIP_Z_M,
+)
+_CAMERA_BODY_PITCH_RAD = math.radians(-20.0)
+_BOTTOM_SCREW_TO_OPTICAL_CENTRE_XYZ_M = (0.0, 0.0175, 0.0125)
+_PITCH_COS = math.cos(_CAMERA_BODY_PITCH_RAD)
+_PITCH_SIN = math.sin(_CAMERA_BODY_PITCH_RAD)
+_BOTTOM_SCREW_TO_OPTICAL_IN_TOOL_TIP_M = (
+    _PITCH_SIN * _BOTTOM_SCREW_TO_OPTICAL_CENTRE_XYZ_M[2],
+    _BOTTOM_SCREW_TO_OPTICAL_CENTRE_XYZ_M[1],
+    _PITCH_COS * _BOTTOM_SCREW_TO_OPTICAL_CENTRE_XYZ_M[2],
+)
+CAMERA_XYZ = tuple(
+    centre - offset
+    for centre, offset in zip(
+        _TOOL_TIP_TO_REALSENSE_CENTRE_XYZ_M,
+        _BOTTOM_SCREW_TO_OPTICAL_IN_TOOL_TIP_M,
+    )
+)
+CAMERA_RPY = (0.0, _CAMERA_BODY_PITCH_RAD, 0.0)
 USE_PRISMATIC = "--use-prismatic-joint" in sys.argv[1:]
 
 

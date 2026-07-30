@@ -200,6 +200,24 @@ detector, enable ROS control and run the project's gravity-compensation and
 homing sequence. A sky/background-only `camera_F` image before homing is
 expected and is not a detector failure.
 
+#### Welding-tool camera extrinsic
+
+`camera_F` is mounted from the existing tool-tip frame (`ee_E`, or `ee_F` on
+the prismatic robot). The tool geometry is unchanged. The pose is derived from
+`docs/Useful Transformation matrix for the welding tool holder.pdf` and
+converted to the RealSense xacro mount frame:
+
+```text
+xyz = [-0.287780, -0.017500, -0.040186] m
+rpy = [0, -20 deg, 0]
+```
+
+Check the resulting optical transform while the simulation is running:
+
+```bash
+ros2 run tf2_ros tf2_echo ee_E camera_F_depth_optical_frame
+```
+
 After homing, launch perception in another sourced terminal:
 
 ```bash

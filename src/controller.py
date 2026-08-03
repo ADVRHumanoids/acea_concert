@@ -13,6 +13,13 @@ Usage (simulation must already be running and homing already completed):
     python3 controller.py --open-loop
 """
 
+## 1 hz controller: decide what to do with the controller
+## 2 on gap pose loss: pause or continue, or keep the controller active but dont follow the trajectory
+
+## 3 small utils to understand the error in the gap frame, and to understand the orientation error in the gap frame
+
+## 4 decouple filter and controller
+
 import argparse
 import sys
 import xml.etree.ElementTree as ET
@@ -502,18 +509,18 @@ while True:
         ee_base,
         gap_y_axis_base,
         {
-            'gap/origin position along normal [m]': gap_origin_normal_coord,
-            'normal tracking/target position [m]': gap_normal_coord,
-            'normal tracking/ee measured position [m]': ee_measured_normal_coord,
-            'normal tracking/error target minus ee [m]': y_err,
-            'normal tracking/command velocity [m/s]': vy_cmd,
-            'tangent tracking/target position [m]': gap_tangent_target_coord,
-            'tangent tracking/ee measured position [m]': ee_measured_tangent_coord,
-            'tangent tracking/error target minus ee [m]': x_err,
-            'tangent tracking/command velocity [m/s]': vx_cmd,
-            'orientation/commanded change from nominal [deg]': np.degrees(linear_correction_angle),
-            'orientation/tracking error commanded vs ee [deg]': np.degrees(linear_tracking_angle),
-        },
+            'normal/error_m': y_err,
+            'normal/correction_m': normal_delta,
+            'normal/correction_velocity_mps': vy_cmd,
+
+            'tangent/error_m': x_err,
+            'tangent/correction_m': tangent_delta,
+            'tangent/correction_velocity_mps': vx_cmd,
+
+            'orientation/error_deg': np.degrees(
+                linear_tracking_angle
+            ),
+        }
     )
 
     t += DT

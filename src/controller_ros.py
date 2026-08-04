@@ -21,6 +21,7 @@ def fetch_robot_description(
         rclpy.init()
 
     node = rclpy.create_node(node_name)
+
     robot_description = None
     robot_description_semantic = None
 
@@ -55,11 +56,13 @@ def fetch_robot_description(
     executor = SingleThreadedExecutor()
     executor.add_node(node)
     deadline = monotonic() + timeout_sec
+
     try:
         while rclpy.ok():
-            if (robot_description is not None
-                    and robot_description_semantic is not None):
+            if (robot_description is not None and
+                    robot_description_semantic is not None):
                 return robot_description, robot_description_semantic
+
             if monotonic() >= deadline:
                 raise RuntimeError(
                     "Failed to receive robot description topics. "
@@ -68,7 +71,9 @@ def fetch_robot_description(
             executor.spin_once(timeout_sec=0.1)
 
         raise RuntimeError(
-            "ROS shut down while reading robot description topics.")
+            "ROS shut down while reading robot description topics."
+        )
+
     finally:
         executor.remove_node(node)
         executor.shutdown()

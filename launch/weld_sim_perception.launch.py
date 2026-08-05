@@ -22,6 +22,8 @@ Junction modes:
 
 import importlib.util
 import math
+import subprocess
+import time
 from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
@@ -165,6 +167,37 @@ def _junction_material(context):
     }
 
 
+def _spawn_junction_after_pipes(context, entity_name, arguments):
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        try:
+            result = subprocess.run(
+                [
+                    "gz", "topic", "-e",
+                    "-t", "/world/default/pose/info",
+                    "-n", "1",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                check=False,
+            )
+            poses = result.stdout
+            if (
+                'name: "weld_pipe_left"' in poses
+                and 'name: "weld_pipe_right"' in poses
+            ):
+                return _BASE._spawn_pipe_with_retry(
+                    context,
+                    entity_name,
+                    arguments,
+                )
+        except subprocess.TimeoutExpired:
+            pass
+        time.sleep(0.25)
+    raise RuntimeError("Timed out waiting for both weld pipe halves")
+
+
 def _spawn_realistic_junction(context, *args, **kwargs):
     mode = LaunchConfiguration("junction_visual_mode").perform(context).strip().lower()
     valid_modes = {
@@ -252,20 +285,20 @@ def _spawn_realistic_junction(context, *args, **kwargs):
         TimerAction(
             period=2.15,
             actions=[
-                Node(
-                    package="ros_gz_sim",
-                    executable="create",
-                    name=f"spawn_weld_junction_{mode}",
-                    arguments=[
-                        "-string", sdf,
-                        "-x", f"{spawn_x:.6f}",
-                        "-y", f"{spawn_y:.6f}",
-                        "-z", f"{float(pipe_center[2]):.6f}",
-                        "-R", "1.5708",
-                        "-P", "0.0",
-                        "-Y", f"{yaw:.6f}",
-                    ],
-                    output="screen",
+                OpaqueFunction(
+                    function=_spawn_junction_after_pipes,
+                    kwargs={
+                        "entity_name": f"weld_junction_{mode}",
+                        "arguments": [
+                            "-string", sdf,
+                            "-x", f"{spawn_x:.6f}",
+                            "-y", f"{spawn_y:.6f}",
+                            "-z", f"{float(pipe_center[2]):.6f}",
+                            "-R", "1.5708",
+                            "-P", "0.0",
+                            "-Y", f"{yaw:.6f}",
+                        ],
+                    },
                 ),
             ],
         )

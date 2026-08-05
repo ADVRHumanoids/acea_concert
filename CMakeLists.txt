@@ -26,6 +26,15 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(FILES
+  src/weld_opt_attempt_log.py
+  src/weld_opt_result.py
+  src/weld_opt_runtime.py
+  src/weld_opt_solver.py
+  src/weld_robot_config.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # --- ACEA perception detection module (validated V16 line) ---
 # Publishes /gap/pose_robot (base_link) as a drop-in replacement for the
 # Gazebo ground-truth gap_pose_publisher.py. acea_alignment/ is installed next

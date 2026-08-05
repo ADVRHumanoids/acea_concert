@@ -132,17 +132,16 @@ Open a terminal and connect to the container:
 docker exec -it [container-id] bash
 
 ```
-If you have `tmux`, create one ready-to-launch terminal session:
+Open one Terminator window with a named pane for each component:
 
 ```bash
 cd /home/user/concert_ws/src/acea_concert
-scripts/concert_tmux
+scripts/concert_terminal
 ```
 
-The script opens one tiled tmux window with named panes, sources the
-ROS/XBot/workspace environment in each pane, and leaves the right command typed.
-Click panes and press Enter in the order listed above. If you prefer tmux tabs,
-run `scripts/concert_tmux --windows`.
+Each pane has the ROS/XBot/workspace environment loaded and shows its
+ready-to-run command. Run them in the order listed above. Click a pane to focus
+it; `Ctrl+Shift+X` expands the focused pane and restores the tiled layout.
 
 For a normal terminal, source the same environment manually:
 

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+if ! command -v terminator >/dev/null 2>&1; then
+    echo "terminator is not installed; rebuild the ACEA Docker image." >&2
+    exit 127
+fi
+
+if [[ -z "${DISPLAY:-}" ]]; then
+    echo "DISPLAY is not set; start the container with X11 enabled." >&2
+    exit 1
+fi
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG="${SCRIPT_DIR}/../docker/terminator.conf"
+
+exec terminator --no-dbus --maximise --config "${CONFIG}" --layout concert

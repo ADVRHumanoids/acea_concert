@@ -124,6 +124,14 @@ concert_home() {
     _concert_python_script home_to_weld_start.py "$@"
 }
 
+concert_optimize_homing() {
+    _concert_python_script plan_homing_from_mat.py "$@"
+}
+
+concert_optimize_weld() {
+    _concert_python_script weld_opt.py "$@"
+}
+
 concert_drive() {
     _concert_python_script drive_base_to_weld_pose.py "$@"
 }
@@ -150,7 +158,9 @@ CONCERT commands:
   concert_xbot_gui        start XBot GUI/server
   concert_gap             publish /gap/pose_robot from Gazebo ground truth
   concert_gravity         run gravity compensation
-  concert_home            home weld joints to optimized start
+  concert_optimize_weld   compute and save the optimized weld trajectory
+  concert_optimize_homing compute and save a collision-aware q_homing
+  concert_home            move the robot along the saved q_homing
   concert_drive           drive base to optimized weld pose
   concert_controller      run welding controller
   concert_rviz            open controller RViz config
@@ -167,4 +177,95 @@ Typical order:
 EOF
 }
 
-[[ "${CONCERT_ENV_QUIET:-0}" == "1" ]] || concert_help
+_concert_ready_help() {
+    case "$1" in
+        concert_optimize_weld)
+            cat <<'EOF'
+
+Weld Optimization
+
+Ready:
+  concert_optimize_weld
+
+Main arguments:
+  --use-prismatic-joint
+  --[no-]upside-down
+
+After it finishes, use the result with:
+  concert_sim --optimize_pose
+  concert_optimize_homing --initial-pose-from-gazebo --retry
+EOF
+            ;;
+        concert_sim)
+            cat <<'EOF'
+
+Ready:
+  concert_sim --optimize_pose
+
+Main arguments:
+  --optimize_pose       use the optimized robot/pipe pose
+  mat_file:=PATH        select an optimization MAT file
+EOF
+            ;;
+        concert_home)
+            cat <<'EOF'
+
+Ready:
+  concert_home --homing-trajectory mat_files/weld_concert.mat
+
+Main arguments:
+  --homing-trajectory PATH
+
+Direct fallback, without an optimized homing path:
+  concert_home --duration SECONDS --dt SECONDS
+This only interpolates from the current joints to weld q[:, 0].
+EOF
+            ;;
+        concert_optimize_homing)
+            cat <<'EOF'
+
+Ready:
+  concert_optimize_homing --initial-pose-from-gazebo --retry
+
+Then switch to the Homing Execution pane without moving the robot.
+
+Main arguments:
+  --mat-file PATH
+  --output PATH
+  --duration SECONDS
+  --dt SECONDS
+  --planner-nodes N
+  --initial-pose-from-gazebo
+  --retry
+  --rviz
+EOF
+            ;;
+        concert_controller)
+            cat <<'EOF'
+
+Ready: 
+  concert_controller
+
+Main arguments:
+  --open-loop
+  --[no-]stop-on-gap-loss
+  --[no-]tangent-correction
+  --gap-pose-timeout SECONDS
+  --gap-filter-tau SECONDS
+  --gap-filter-history-size N
+  --gap-filter-max-position-jump METERS
+  --gap-filter-max-angle-jump DEGREES
+EOF
+            ;;
+        *)
+            printf '\nReady: %s\n' "$1"
+            ;;
+    esac
+}
+
+if [[ -n "${CONCERT_READY_COMMAND:-}" ]]; then
+    _concert_ready_help "${CONCERT_READY_COMMAND}"
+    unset CONCERT_READY_COMMAND
+elif [[ "${CONCERT_ENV_QUIET:-0}" != "1" ]]; then
+    concert_help
+fi

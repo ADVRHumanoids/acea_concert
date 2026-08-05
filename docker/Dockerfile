@@ -6,8 +6,7 @@ RUN mkdir -p ~/concert_ws && cd ~/concert_ws && forest init
 RUN echo "source /opt/xbot/setup.sh" >> ~/.bashrc
 RUN echo "source ~/concert_ws/setup.bash" >> ~/.bashrc
 
-
-RUN sudo apt-get update && sudo apt-get install -y swig tmux
+RUN sudo apt-get update && sudo apt-get install -y swig
 
 WORKDIR /home/user/concert_ws
 
@@ -25,3 +24,10 @@ RUN forest grow centauro_cartesio --clone-protocol https -j6 --verbose
 RUN forest grow xbot2_gui_server --clone-protocol https -j6 --verbose
 
 RUN mkdir -p ~/patch
+
+RUN sudo apt-get update && sudo apt-get install -y terminator
+
+RUN printf '%s\n' \
+    'printf "\e]11;#111827\e\\"' \
+    'trap '\''printf "\e]111\e\\"'\'' EXIT' \
+    >> ~/.bashrc

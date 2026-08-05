@@ -3,6 +3,7 @@ services:
     build:
       context: .
     image: acea_concert:latest
+    working_dir: /home/user/concert_ws/src/acea_concert
     stdin_open: true
     tty: true 
     privileged: true

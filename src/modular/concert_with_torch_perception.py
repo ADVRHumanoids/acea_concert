@@ -22,31 +22,38 @@ from modular.URDF_writer import UrdfWriter
 CANONICAL_GENERATOR = Path(__file__).resolve().with_name("concert_with_torch.py")
 CAMERA_NAME = "camera_F"
 
-# Camera calibration from the supplied welding-tool-holder CAD transform.
-#
-# The PDF gives TOOL_BASE -> TOOL_TIP as +271.500 mm along Z, with no
-# rotation, and TOOL_BASE -> REALSENSE_CENTRE as:
-#
-#   R = [[ 0,       0.342020,  0.939693],
-#        [-1,       0,         0       ],
-#        [ 0,      -0.939693,  0.342020]]
-#   t = [-292.055, 0, 243.060] mm
-#
-# ``end_effector_E``/``end_effector_F`` is the tool body frame at the mounting
-# interface: TOOL_BASE in the PDF. ``ee_E``/``ee_F`` is a rotated task frame at
-# the torch tip and must not be used as the camera parent. The generic
-# RealSense xacro starts at its bottom screw, then offsets the optical centre by
-# [0, 17.5, 12.5] mm and applies the optical-frame rotation. Compensate those
-# fixed transforms so the final optical frame recovers the PDF matrix exactly.
-_TOOL_BASE_TO_REALSENSE_CENTRE_XYZ_M = (-0.292055, 0.0, 0.243060)
+# Camera pose from the welding-tool-holder CAD sheet, matrix 3, turned 180 deg
+# about Z: the sheet's TOOL_BASE is our mounting flange seen the other way round.
+# The real robot's URDF (recorded in acea_real_1) shows why - it carries the tool
+# camera at (+0.1357, 0, 0.2427) from end_effector_E, on the positive X side,
+# where the sheet puts it at negative X. Parent is the flange, not ee_E.
+_TOOL_BASE_TO_REALSENSE_CENTRE_XYZ_M = (0.292055, 0.0, 0.243060)
 _CAMERA_BODY_PITCH_RAD = math.radians(-20.0)
+_TOOL_BASE_YAW_RAD = math.radians(180.0)
+CAMERA_RPY = (0.0, _CAMERA_BODY_PITCH_RAD, _TOOL_BASE_YAW_RAD)
+
+# The RealSense xacro anchors at its bottom screw, 17.5/12.5 mm off the optical
+# centre, so take that back out through the full rotation - the pitch alone
+# leaves the optical centre 22 mm out once the yaw is there.
 _BOTTOM_SCREW_TO_OPTICAL_CENTRE_XYZ_M = (0.0, 0.0175, 0.0125)
-_PITCH_COS = math.cos(_CAMERA_BODY_PITCH_RAD)
-_PITCH_SIN = math.sin(_CAMERA_BODY_PITCH_RAD)
-_BOTTOM_SCREW_TO_OPTICAL_IN_TOOL_BASE_M = (
-    _PITCH_SIN * _BOTTOM_SCREW_TO_OPTICAL_CENTRE_XYZ_M[2],
-    _BOTTOM_SCREW_TO_OPTICAL_CENTRE_XYZ_M[1],
-    _PITCH_COS * _BOTTOM_SCREW_TO_OPTICAL_CENTRE_XYZ_M[2],
+
+
+def _rotate_by_camera_rpy(vector):
+    """Rotate a camera-frame vector into the parent frame using CAMERA_RPY."""
+    roll, pitch, yaw = CAMERA_RPY
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    rotation = (
+        (cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr),
+        (sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr),
+        (-sp, cp * sr, cp * cr),
+    )
+    return tuple(sum(row[i] * vector[i] for i in range(3)) for row in rotation)
+
+
+_BOTTOM_SCREW_TO_OPTICAL_IN_TOOL_BASE_M = _rotate_by_camera_rpy(
+    _BOTTOM_SCREW_TO_OPTICAL_CENTRE_XYZ_M
 )
 CAMERA_XYZ = tuple(
     centre - offset
@@ -55,7 +62,6 @@ CAMERA_XYZ = tuple(
         _BOTTOM_SCREW_TO_OPTICAL_IN_TOOL_BASE_M,
     )
 )
-CAMERA_RPY = (0.0, _CAMERA_BODY_PITCH_RAD, 0.0)
 USE_PRISMATIC = "--use-prismatic-joint" in sys.argv[1:]
 
 

@@ -206,21 +206,51 @@ image before homing is expected and is not a detector failure.
 
 #### Welding-tool camera extrinsic
 
-`camera_F` is mounted from the existing tool-tip frame (`ee_E`, or `ee_F` on
-the prismatic robot). The tool geometry is unchanged. The pose is derived from
-`docs/Useful Transformation matrix for the welding tool holder.pdf` and
-converted to the RealSense xacro mount frame:
+`camera_F` is mounted from the tool body frame at the mounting interface
+(`end_effector_E`, or `end_effector_F` on the prismatic robot). This is
+`TOOL_BASE` in the supplied holder CAD transform; `ee_E`/`ee_F` is a
+separately rotated task frame at the torch tip.
+The tool geometry is unchanged. The CAD pose is converted to the RealSense
+xacro mount frame:
 
 ```text
-xyz = [-0.287780, -0.017500, -0.040186] m
-rpy = [0, -20 deg, 0]
+xyz = [0.287780, 0.017500, 0.231314] m
+rpy = [0, -20 deg, 180 deg]
 ```
 
-Check the resulting optical transform while the simulation is running:
+Inspect the resulting optical transform while the simulation is running:
 
 ```bash
-ros2 run tf2_ros tf2_echo ee_E camera_F_depth_optical_frame
+ros2 run tf2_ros tf2_echo \
+  end_effector_E camera_F_depth_optical_frame
 ```
+
+Relative to `end_effector_E`, the expected optical-centre translation is
+`[0.292055, 0, 0.243060] m`. The expected rotation matrix is:
+
+```text
+ 0.000000 -0.342020 -0.939693
+ 1.000000  0.000000  0.000000
+ 0.000000 -0.939693  0.342020
+```
+
+The CAD sheet prints this on negative X. It is applied turned 180 deg about Z
+because `TOOL_BASE` faces the other way round to the arm flange: the robot's
+own URDF, recorded in `acea_real_1`, carries the tool camera on positive X.
+
+For a visual check in RViz:
+
+1. set `Fixed Frame` to `end_effector_E` (`end_effector_F` for the prismatic
+   robot);
+2. add a `TF` display and enable `end_effector_E`, `camera_F_link` and
+   `camera_F_depth_optical_frame`;
+3. add `RobotModel` to inspect the camera body on the welding holder;
+4. add an `Image` display on `/camera_F/color/image_raw` after homing.
+
+Relative to the red/green/blue axes of `end_effector_E`, the optical origin
+must be `[292.055, 0, 243.060] mm`, placing the camera above the holder as in
+the CAD model. For the prismatic robot, replace `end_effector_E` with
+`end_effector_F` in the `tf2_echo` command.
 
 After homing, launch perception in another sourced terminal:
 

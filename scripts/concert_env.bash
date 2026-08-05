@@ -132,6 +132,10 @@ concert_optimize_weld() {
     _concert_python_script weld_opt.py "$@"
 }
 
+concert_weld_rviz() {
+    rviz2 -d "${ACEA_CONCERT_DIR}/rviz/rviz_config.rviz" "$@"
+}
+
 concert_drive() {
     _concert_python_script drive_base_to_weld_pose.py "$@"
 }
@@ -159,6 +163,7 @@ CONCERT commands:
   concert_gap             publish /gap/pose_robot from Gazebo ground truth
   concert_gravity         run gravity compensation
   concert_optimize_weld   compute and save the optimized weld trajectory
+  concert_weld_rviz       open the weld-optimization RViz config
   concert_optimize_homing compute and save a collision-aware q_homing
   concert_home            move the robot along the saved q_homing
   concert_drive           drive base to optimized weld pose
@@ -191,9 +196,17 @@ Main arguments:
   --use-prismatic-joint
   --[no-]upside-down
 
-After it finishes, use the result with:
-  concert_sim --optimize_pose
-  concert_optimize_homing --initial-pose-from-gazebo --retry
+EOF
+            ;;
+        concert_weld_rviz)
+            cat <<'EOF'
+
+Weld Optimization RViz
+
+Opens rviz/rviz_config.rviz.
+
+Ready:
+  concert_weld_rviz
 EOF
             ;;
         concert_sim)

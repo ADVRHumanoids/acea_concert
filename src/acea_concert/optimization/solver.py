@@ -1,6 +1,8 @@
 """Horizon torque setup and collision-aware weld solution search."""
 
+from contextlib import nullcontext, redirect_stdout
 from dataclasses import dataclass
+import io
 
 import casadi as cs
 import casadi_kin_dyn.py3casadi_kin_dyn as casadi_kin_dyn
@@ -12,7 +14,7 @@ from horizon.utils import kin_dyn as kin_dyn_utils
 from scipy.spatial.transform import Rotation as R
 from scipy.stats import qmc
 
-from weld_opt_attempt_log import WeldOptAttemptLog
+from .attempt_log import WeldOptAttemptLog
 
 
 VIRTUAL_JOINT_NAMES = {'universe', 'reference'}
@@ -118,6 +120,7 @@ def build_weld_problem(
     minimize_critical_joint_torques,
     critical_torque_joints,
     torque_cost_weight,
+    concise=False,
 ):
     problem = Problem(n_intervals, receding=True, casadi_type=cs.SX)
     problem.setDt(duration / n_intervals)
@@ -217,6 +220,12 @@ def build_weld_problem(
         critical_torque_joints,
         torque_cost_weight,
     )
+    if concise:
+        task_interface.si.opts.update({
+            'ipopt.print_level': 0,
+            'ipopt.sb': 'yes',
+            'print_time': 0,
+        })
     task_interface.finalize()
     return WeldProblem(
         problem=problem,
@@ -256,6 +265,7 @@ def solve_weld_problem(
     n_intervals,
     base_bounds,
     base_search_points,
+    target_valid_solutions=None,
     max_random_attempts,
     nominal_pipe_center,
     optimize_pipe_height,
@@ -263,26 +273,41 @@ def solve_weld_problem(
     inverse_dynamics,
     critical_torque_indices,
     on_base_candidate=None,
+    concise=False,
 ):
     """Solve candidates and return the first valid or lowest-torque solution."""
     if base_search_points is not None and inverse_dynamics is None:
         raise RuntimeError('--base-search requires at least one critical torque joint.')
+    if base_search_points is not None:
+        if target_valid_solutions is None:
+            target_valid_solutions = len(base_search_points)
+        if not 1 <= target_valid_solutions <= len(base_search_points):
+            raise ValueError(
+                'target_valid_solutions must be between 1 and the number of '
+                'Sobol trials.'
+            )
 
     x_low, x_high, y_low, y_high = base_bounds
     best_solution = None
     best_peak_torque = np.inf
+    best_attempt = None
+    best_base = None
     attempt_count = 0
+    valid_count = 0
+    collision_count = 0
+    solver_failure_count = 0
     attempt_log = WeldOptAttemptLog()
-    print(f"[weld_opt] Attempt log: {attempt_log.path}")
+    if not concise:
+        print(f"[weld_opt] Attempt log: {attempt_log.path}")
 
     while True:
-        attempt_count += 1
         if (base_search_points is not None
-                and attempt_count > len(base_search_points)):
+                and (attempt_count >= len(base_search_points)
+                     or valid_count >= target_valid_solutions)):
             break
         if (base_search_points is None
                 and max_random_attempts > 0
-                and attempt_count > max_random_attempts):
+                and attempt_count >= max_random_attempts):
             attempt_log.write(
                 attempt_count,
                 "max_attempts_exceeded",
@@ -292,6 +317,7 @@ def solve_weld_problem(
                 'No collision-free solution found after '
                 f'{max_random_attempts} attempts.'
             )
+        attempt_count += 1
 
         if base_search_points is None:
             base_x = np.random.uniform(x_low, x_high, size=1)
@@ -302,7 +328,13 @@ def solve_weld_problem(
 
         if on_base_candidate is not None:
             on_base_candidate(base_x[0], base_y[0])
-        print(f'Publishing point: x={base_x[0]}, y={base_y[0]}')
+        if base_search_points is None:
+            print(f'Publishing point: x={base_x[0]}, y={base_y[0]}')
+        else:
+            print(
+                f"[weld_opt] Sobol {attempt_count}/{len(base_search_points)}: "
+                f"x={base_x[0]:.4f}, y={base_y[0]:.4f}"
+            )
         attempt_log.write(attempt_count, "start")
 
         initial_guess_q = task_interface.model.q0.copy()
@@ -312,7 +344,17 @@ def solve_weld_problem(
         task_interface.model.q[0].setBounds(base_x, base_x)
         task_interface.model.q[1].setBounds(base_y, base_y)
 
-        if not task_interface.bootstrap():
+        output_context = (
+            redirect_stdout(io.StringIO()) if concise else nullcontext())
+        with output_context:
+            solution_found = task_interface.bootstrap()
+        if not solution_found:
+            solver_failure_count += 1
+            if base_search_points is not None:
+                print(
+                    f"[weld_opt] Sobol {attempt_count}/"
+                    f"{len(base_search_points)} NO SOLUTION: solver failed"
+                )
             attempt_log.write(attempt_count, "bootstrap_failed")
             continue
 
@@ -333,11 +375,19 @@ def solve_weld_problem(
                 collision = (node, pairs)
                 break
         if collision is not None:
+            collision_count += 1
             node, pairs = collision
-            print(
-                f"[weld_opt] Rejecting attempt {attempt_count}: "
-                f"collision at node {node}: {pairs}"
-            )
+            if base_search_points is None:
+                print(
+                    f"[weld_opt] Rejecting attempt {attempt_count}: "
+                    f"collision at node {node}: {pairs}"
+                )
+            else:
+                print(
+                    f"[weld_opt] Sobol {attempt_count}/"
+                    f"{len(base_search_points)} SOLUTION REJECTED: "
+                    f"collision at node {node}: {pairs}"
+                )
             attempt_log.write(
                 attempt_count,
                 "collision",
@@ -350,29 +400,43 @@ def solve_weld_problem(
         if base_search_points is None:
             return candidate_solution
 
+        valid_count += 1
         peak_torque = _peak_critical_quasi_static_torque(
             candidate_solution,
             inverse_dynamics,
             critical_torque_indices,
         )
         print(
-            f"[weld_opt] Sobol base {attempt_count}/{len(base_search_points)}: "
-            f"peak critical torque={peak_torque:.3f} Nm"
+            f"[weld_opt] Sobol {attempt_count}/{len(base_search_points)} "
+            f"SOLUTION FOUND {valid_count}/{target_valid_solutions}: "
+            f"peak torque={peak_torque:.3f} Nm"
         )
         if peak_torque < best_peak_torque:
             best_peak_torque = peak_torque
+            best_attempt = attempt_count
+            best_base = (float(base_x[0]), float(base_y[0]))
             best_solution = {
                 name: np.array(value, copy=True)
                 for name, value in candidate_solution.items()
             }
 
+    print(
+        f"[weld_opt] Search complete: attempted={attempt_count}, "
+        f"valid={valid_count}, collisions={collision_count}, "
+        f"solver_failures={solver_failure_count}."
+    )
     if best_solution is None:
         raise RuntimeError(
-            f'No collision-free solution found for the '
-            f'{len(base_search_points)} Sobol base positions.'
+            f'No collision-free solution found after {attempt_count} Sobol trials.'
+        )
+    if valid_count < target_valid_solutions:
+        print(
+            f"[weld_opt] WARNING: reached the trial limit with only "
+            f"{valid_count}/{target_valid_solutions} valid solutions."
         )
     print(
-        f"[weld_opt] Selected lowest collision-free peak torque: "
-        f"{best_peak_torque:.3f} Nm"
+        f"[weld_opt] SELECTED Sobol {best_attempt}/{len(base_search_points)}: "
+        f"x={best_base[0]:.4f}, y={best_base[1]:.4f}, "
+        f"peak torque={best_peak_torque:.3f} Nm"
     )
     return best_solution

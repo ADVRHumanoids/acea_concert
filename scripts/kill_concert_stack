@@ -95,7 +95,6 @@ PATTERNS=(
     'gravity_comp_node[.]py'
     'gravity_comp'
     'controller[.]py'
-    'controller_ros[.]py'
     'drive_base_to_weld_pose[.]py'
     'home_to_weld_start[.]py'
     'weld_opt[.]py'

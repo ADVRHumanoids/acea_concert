@@ -190,9 +190,11 @@ _concert_ready_help() {
 Weld Optimization
 
 Ready:
-  concert_optimize_weld
+  concert_optimize_weld --base-search --max-trials 24
 
 Main arguments:
+  --base-search [SOLUTIONS] target valid Sobol solutions (default: 8)
+  --max-trials TRIALS      maximum attempted Sobol positions (default: 3x)
   --use-prismatic-joint
   --[no-]upside-down
 

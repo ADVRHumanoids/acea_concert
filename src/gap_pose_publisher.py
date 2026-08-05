@@ -28,7 +28,10 @@ from rclpy.utilities import remove_ros_args
 from geometry_msgs.msg import PoseStamped
 from scipy.spatial.transform import Rotation as R
 
-from gap_pose_faults import GapPoseFaultConfig, GapPoseFaultInjector
+from acea_concert.control.gap_pose_faults import (
+    GapPoseFaultConfig,
+    GapPoseFaultInjector,
+)
 
 # ── Gazebo model names (from gz topic -e /world/default/pose/info) ─────────
 ROBOT_MODEL     = 'modularbot'        # capital M and B — verified from Gazebo

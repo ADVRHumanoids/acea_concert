@@ -9,8 +9,8 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Header
 from scipy.spatial.transform import Rotation as R
 
-from utils.diagnostic import DiagnosticPlotter
-from utils.gap_pose_filter import GapPoseLowPass
+from .diagnostic import DiagnosticPlotter
+from .gap_pose_filter import GapPoseLowPass
 from rclpy.qos import QoSProfile, DurabilityPolicy, ReliabilityPolicy
 from std_msgs.msg import String
 

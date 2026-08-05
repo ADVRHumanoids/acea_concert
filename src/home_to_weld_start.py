@@ -17,7 +17,7 @@ import numpy as np
 import rclpy
 from rclpy.utilities import remove_ros_args
 from scipy.io import loadmat
-from controller_ros import fetch_robot_description
+from acea_concert.control.ros import fetch_robot_description
 from xbot2_interface import pyxbot2_interface as xbi
 
 

@@ -7,7 +7,7 @@ from rclpy.node import Node
 from xbot_msgs.msg import JointCommand
 from xbot2_interface import pyxbot2_interface as xbi
 
-from controller_ros import fetch_robot_description
+from acea_concert.control.ros import fetch_robot_description
 
 
 BASE_AND_WHEEL_JOINTS = (

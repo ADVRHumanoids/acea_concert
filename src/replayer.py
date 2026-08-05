@@ -121,7 +121,9 @@ class TrajectoryReplayer:
         import casadi as cs
         from horizon.rhc.model_description import FullModelInverseDynamics
         from horizon.rhc.taskInterface import TaskInterface
-        from circular_trajectory import generate_circular_trajectory
+        from acea_concert.optimization.circular_trajectory import (
+            generate_circular_trajectory,
+        )
 
         ns = nodes
         T = t_max

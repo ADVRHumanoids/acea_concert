@@ -488,8 +488,9 @@ base_R_ee_des = base_R_gap * gap_R_ee_des
 - `src/home_to_weld_start.py`: moves weld joints to trajectory node 0.
 - `src/drive_base_to_weld_pose.py`: drives the mobile base to the optimized relative gap pose.
 - `src/controller.py`: online welding controller.
-- `src/controller_ros.py`: ROS interface for the controller.
-- `src/utils/`: controller geometry, trajectory, and diagnostic helpers.
+- `src/acea_concert/control/`: controller logic, ROS interface, filtering, trajectories, and diagnostics.
+- `src/acea_concert/optimization/`: weld optimization, collision checking, and result helpers.
+- `src/acea_concert/homing/`: homing optimization helpers.
 
 ## Configuration
 

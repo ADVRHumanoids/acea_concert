@@ -1,5 +1,7 @@
 """Small dependency-free-of-robot check for weld solution selection."""
 
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import sys
 
@@ -7,7 +9,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import weld_opt_solver as solver
+from acea_concert.optimization import solver
 
 
 class _Log:
@@ -50,6 +52,7 @@ class _TaskInterface:
         self.solution = None
 
     def bootstrap(self):
+        print("noisy solver output")
         q = np.zeros((7, 2))
         q[0, :] = self.model.fixed[0]
         q[1, :] = self.model.fixed[1]
@@ -76,23 +79,35 @@ class _InverseDynamics:
 
 def main():
     solver.WeldOptAttemptLog = _Log
-    result = solver.solve_weld_problem(
-        task_interface=_TaskInterface(),
-        n_intervals=1,
-        base_bounds=(-2.0, 2.0, -1.0, 1.0),
-        base_search_points=np.array([
-            [2.0, 0.0],
-            [-1.0, 0.0],
-            [1.0, 0.0],
-        ]),
-        max_random_attempts=0,
-        nominal_pipe_center=[1.5, 0.0, 1.0],
-        optimize_pipe_height=False,
-        make_collision_checker=lambda center: _CollisionChecker(),
-        inverse_dynamics=_InverseDynamics(),
-        critical_torque_indices=[6],
-    )
+    output = StringIO()
+    with redirect_stdout(output):
+        result = solver.solve_weld_problem(
+            task_interface=_TaskInterface(),
+            n_intervals=1,
+            base_bounds=(-2.0, 2.0, -1.0, 1.0),
+            base_search_points=np.array([
+                [2.0, 0.0],
+                [-1.0, 0.0],
+                [1.0, 0.0],
+                [0.5, 0.0],
+            ]),
+            target_valid_solutions=2,
+            max_random_attempts=0,
+            nominal_pipe_center=[1.5, 0.0, 1.0],
+            optimize_pipe_height=False,
+            make_collision_checker=lambda center: _CollisionChecker(),
+            inverse_dynamics=_InverseDynamics(),
+            critical_torque_indices=[6],
+            concise=True,
+        )
     assert result["q"][0, 0] == 1.0
+    text = output.getvalue()
+    assert "noisy solver output" not in text
+    assert "Sobol 2/4 SOLUTION REJECTED: collision" in text
+    assert "Sobol 3/4 SOLUTION FOUND 2/2: peak torque=10.000 Nm" in text
+    assert "Search complete: attempted=3, valid=2, collisions=1" in text
+    assert "SELECTED Sobol 3/4" in text
+    assert "Sobol 4/4" not in text
 
 
 if __name__ == "__main__":

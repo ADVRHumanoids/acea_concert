@@ -18,7 +18,7 @@ import casadi_kin_dyn.py3casadi_kin_dyn as casadi_kin_dyn
 import numpy as np
 from scipy.io import loadmat, savemat
 
-from homing_trajectory import (
+from acea_concert.homing.trajectory import (
     DEFAULT_ACCEL_WEIGHT,
     DEFAULT_CARTESIAN_MOTION_WEIGHT,
     DEFAULT_COMPACT_WEIGHT,

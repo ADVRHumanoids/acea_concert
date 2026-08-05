@@ -1,5 +1,7 @@
 import argparse
+from contextlib import nullcontext, redirect_stdout
 from dataclasses import replace
+import io
 import os
 
 import sys
@@ -8,17 +10,19 @@ from pathlib import Path
 
 from horizon.ros import replay_trajectory
 
-from circular_trajectory import generate_circular_trajectory
+from acea_concert.optimization.circular_trajectory import (
+    generate_circular_trajectory,
+)
 
-from collision_checker import CollisionChecker
-from weld_robot_config import weld_robot_config
-from weld_opt_result import build_weld_result, store_weld_result
-from weld_opt_solver import (
+from acea_concert.optimization.collision_checker import CollisionChecker
+from acea_concert.optimization.robot_config import weld_robot_config
+from acea_concert.optimization.result import build_weld_result, store_weld_result
+from acea_concert.optimization.solver import (
     build_weld_problem,
     make_sobol_base_points,
     solve_weld_problem,
 )
-from weld_opt_runtime import (
+from acea_concert.optimization.runtime import (
     weld_opt_runtime_from_env,
     weld_output_path,
     weld_scenario_from_env,
@@ -55,18 +59,34 @@ def parse_args():
         default=None,
         metavar="SAMPLES",
         help=(
-            "Evaluate Sobol-sampled base XY positions and keep the "
-            "collision-free solution with the lowest peak critical-joint "
-            "torque. Defaults to 8 samples when no value is given."
+            "Collect this many collision-free Sobol base solutions and keep "
+            "the one with the lowest peak critical-joint torque. Defaults "
+            "to 8 solutions when no value is given."
+        ),
+    )
+    parser.add_argument(
+        "--max-trials",
+        type=int,
+        default=None,
+        metavar="TRIALS",
+        help=(
+            "Maximum Sobol positions attempted by --base-search. Defaults "
+            "to three times the requested solution count."
         ),
     )
     parsed = parser.parse_args()
     if parsed.base_search is not None and parsed.base_search < 1:
-        parser.error("--base-search must use at least one sample")
+        parser.error("--base-search must request at least one solution")
+    if parsed.max_trials is not None:
+        if parsed.base_search is None:
+            parser.error("--max-trials requires --base-search")
+        if parsed.max_trials < parsed.base_search:
+            parser.error("--max-trials must be at least --base-search")
     return parsed
 
 
 args = parse_args()
+concise_output = args.base_search is not None
 runtime = weld_opt_runtime_from_env()
 scenario = weld_scenario_from_env()
 if args.upside_down is not None:
@@ -104,7 +124,14 @@ with open('/tmp/concert_weld.urdf', 'w') as f:
 with open('/tmp/concert_weld.srdf', 'w') as f:
     f.write(srdf)
 
-subprocess.run(f'moveit_compute_default_collisions --urdf_path /tmp/concert_weld.urdf --srdf_path /tmp/concert_weld.srdf', shell=True, check=True)
+subprocess.run(
+    'moveit_compute_default_collisions '
+    '--urdf_path /tmp/concert_weld.urdf '
+    '--srdf_path /tmp/concert_weld.srdf',
+    shell=True,
+    check=True,
+    stdout=subprocess.DEVNULL if concise_output else None,
+)
 
 with open('/tmp/concert_weld.srdf', 'r') as f:
     srdf = f.read()
@@ -117,6 +144,7 @@ rsp_process = None
 if not (runtime.skip_rviz_scene and runtime.skip_replay):
     rsp_process = subprocess.Popen(
         ["ros2", "run", "robot_state_publisher", "robot_state_publisher", "--ros-args", "-p", f"robot_description:={urdf}"],
+        stdout=subprocess.DEVNULL if concise_output else None,
     )
 
 # ========================================================
@@ -173,13 +201,21 @@ base_bounds = (
     bound_initial_pos_y_low,
     bound_initial_pos_y_high,
 )
+base_search_max_trials = (
+    args.max_trials
+    if args.max_trials is not None
+    else 3 * args.base_search if args.base_search is not None else None
+)
 base_search_points = make_sobol_base_points(
-    args.base_search,
+    base_search_max_trials,
     base_bounds,
     runtime.seed,
 )
 if base_search_points is not None:
-    print(f"[weld_opt] Searching {args.base_search} Sobol base positions.")
+    print(
+        f"[weld_opt] Searching for {args.base_search} valid solutions "
+        f"with at most {base_search_max_trials} Sobol trials."
+    )
 
 # Draw rectangle in RViz covering all possible random XY positions
 center_x = (bound_initial_pos_x_low + bound_initial_pos_x_high) / 2.0
@@ -235,29 +271,37 @@ def launch_rviz_scene(pipe_center, trajectory):
 
 launch_rviz_scene(pos_center_pipe, circular_pos)
 
-print(
-    f"circular trajectory applied: center={pos_center_pipe}, "
-    f"pipe_radius={radius_pipe}, "
-    f"standoff={weld_standoff_from_pipe}, "
-    f"trajectory_radius={weld_trajectory_radius}"
-)
-print(f"angle range: [{angle_weld_start}, {angle_weld_end}] rad, steps: {ns + 1}")
+if not concise_output:
+    print(
+        f"circular trajectory applied: center={pos_center_pipe}, "
+        f"pipe_radius={radius_pipe}, "
+        f"standoff={weld_standoff_from_pipe}, "
+        f"trajectory_radius={weld_trajectory_radius}"
+    )
+    print(
+        f"angle range: [{angle_weld_start}, {angle_weld_end}] rad, "
+        f"steps: {ns + 1}"
+    )
 
-problem = build_weld_problem(
-    urdf=urdf,
-    task_config=task_config,
-    ee_link=ee_link,
-    n_intervals=ns,
-    duration=T,
-    circular_orientation=circular_ori,
-    circle_offset=circle_offset,
-    nominal_pipe_center=pos_center_pipe,
-    optimize_pipe_height=OPTIMIZE_PIPE_HEIGHT,
-    pipe_z_bounds=pipe_z_bounds,
-    minimize_critical_joint_torques=MINIMIZE_CRITICAL_JOINT_TORQUES,
-    critical_torque_joints=CRITICAL_TORQUE_JOINTS,
-    torque_cost_weight=TORQUE_COST_WEIGHT,
-)
+problem_output = (
+    redirect_stdout(io.StringIO()) if concise_output else nullcontext())
+with problem_output:
+    problem = build_weld_problem(
+        urdf=urdf,
+        task_config=task_config,
+        ee_link=ee_link,
+        n_intervals=ns,
+        duration=T,
+        circular_orientation=circular_ori,
+        circle_offset=circle_offset,
+        nominal_pipe_center=pos_center_pipe,
+        optimize_pipe_height=OPTIMIZE_PIPE_HEIGHT,
+        pipe_z_bounds=pipe_z_bounds,
+        minimize_critical_joint_torques=MINIMIZE_CRITICAL_JOINT_TORQUES,
+        critical_torque_joints=CRITICAL_TORQUE_JOINTS,
+        torque_cost_weight=TORQUE_COST_WEIGHT,
+        concise=concise_output,
+    )
 prb = problem.problem
 kin_dyn = problem.kin_dyn
 model = problem.model
@@ -296,6 +340,7 @@ solution = solve_weld_problem(
     n_intervals=ns,
     base_bounds=base_bounds,
     base_search_points=base_search_points,
+    target_valid_solutions=args.base_search,
     max_random_attempts=runtime.max_random_initial_pose_attempts,
     nominal_pipe_center=pos_center_pipe,
     optimize_pipe_height=OPTIMIZE_PIPE_HEIGHT,
@@ -303,6 +348,7 @@ solution = solve_weld_problem(
     inverse_dynamics=id_fn_cost,
     critical_torque_indices=critical_torque_indices,
     on_base_candidate=on_base_candidate,
+    concise=concise_output,
 )
 
 result = build_weld_result(
@@ -340,17 +386,19 @@ result = build_weld_result(
         weld_upside_down=weld_upside_down,
     ),
 )
-if OPTIMIZE_PIPE_HEIGHT:
-    print(f"[weld_opt] Optimized pipe height: z={result.pipe_z:.4f} m")
-else:
-    print(f"[weld_opt] Fixed pipe height: z={result.pipe_z:.4f} m")
+if not concise_output:
+    if OPTIMIZE_PIPE_HEIGHT:
+        print(f"[weld_opt] Optimized pipe height: z={result.pipe_z:.4f} m")
+    else:
+        print(f"[weld_opt] Fixed pipe height: z={result.pipe_z:.4f} m")
 launch_rviz_scene(result.pipe_center, result.trajectory)
 
 mat_file_path = weld_output_path(PATH_TO_ACEA_CONCERT)
 store_weld_result(mat_file_path, result)
 print(f"[weld_opt] Saved optimization result to: {mat_file_path}")
 
-print(f"[INFO] Final initial robot pose: {solution['q'][:3, 0]}")
+if not concise_output:
+    print(f"[INFO] Final initial robot pose: {solution['q'][:3, 0]}")
 
 if runtime.skip_replay:
     if rsp_process is not None:

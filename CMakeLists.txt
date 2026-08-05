@@ -17,22 +17,15 @@ install(PROGRAMS
   src/plot_weld_opt_batch.py
   src/replayer.py
   src/controller.py
-  src/circular_trajectory.py
-  src/collision_checker.py
-  src/homing_trajectory.py
   src/plan_homing_from_mat.py
   src/gap_pose_publisher.py
   src/plot_weld_result.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(FILES
-  src/weld_opt_attempt_log.py
-  src/weld_opt_result.py
-  src/weld_opt_runtime.py
-  src/weld_opt_solver.py
-  src/weld_robot_config.py
-  DESTINATION lib/${PROJECT_NAME}
+install(DIRECTORY src/acea_concert/
+  DESTINATION lib/${PROJECT_NAME}/acea_concert
+  FILES_MATCHING PATTERN "*.py"
 )
 
 # --- ACEA perception detection module (validated V16 line) ---

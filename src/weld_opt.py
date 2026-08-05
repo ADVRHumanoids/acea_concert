@@ -14,6 +14,7 @@ from pathlib import Path
 import casadi_kin_dyn.py3casadi_kin_dyn as casadi_kin_dyn
 
 from scipy.spatial.transform import Rotation as R
+from scipy.stats import qmc
 from horizon.ros import replay_trajectory
 
 from circular_trajectory import generate_circular_trajectory
@@ -51,7 +52,23 @@ def parse_args():
             "it off)."
         ),
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--base-search",
+        nargs="?",
+        type=int,
+        const=8,
+        default=None,
+        metavar="SAMPLES",
+        help=(
+            "Evaluate Sobol-sampled base XY positions and keep the "
+            "collision-free solution with the lowest peak critical-joint "
+            "torque. Defaults to 8 samples when no value is given."
+        ),
+    )
+    parsed = parser.parse_args()
+    if parsed.base_search is not None and parsed.base_search < 1:
+        parser.error("--base-search must use at least one sample")
+    return parsed
 
 
 args = parse_args()
@@ -160,6 +177,21 @@ bound_initial_pos_x_high = pos_center_pipe[0] - radius_pipe - footprint_robot_x/
 
 bound_initial_pos_y_low = -1.5 + footprint_robot_y/2
 bound_initial_pos_y_high = 1.5 - footprint_robot_y/2
+
+base_search_points = None
+if args.base_search is not None:
+    sample_power = (args.base_search - 1).bit_length()
+    unit_points = qmc.Sobol(
+        d=2,
+        scramble=True,
+        seed=runtime.seed,
+    ).random_base2(sample_power)[:args.base_search]
+    base_search_points = qmc.scale(
+        unit_points,
+        [bound_initial_pos_x_low, bound_initial_pos_y_low],
+        [bound_initial_pos_x_high, bound_initial_pos_y_high],
+    )
+    print(f"[weld_opt] Searching {args.base_search} Sobol base positions.")
 
 # Draw rectangle in RViz covering all possible random XY positions
 center_x = (bound_initial_pos_x_low + bound_initial_pos_x_high) / 2.0
@@ -372,6 +404,7 @@ cnsrt_vel_linear_guide.setBounds(0, np.inf)
 
 critical_torque_indices = []
 missing_critical_torque_joints = []
+id_fn_cost = None
 
 if MINIMIZE_CRITICAL_JOINT_TORQUES:
     critical_torque_indices, missing_critical_torque_joints = torque_indices_for_joints(
@@ -407,10 +440,30 @@ if MINIMIZE_CRITICAL_JOINT_TORQUES:
     else:
         print('[weld_opt] Warning: torque minimization enabled but no joints matched.')
 
+if args.base_search is not None and id_fn_cost is None:
+    raise RuntimeError('--base-search requires at least one critical torque joint.')
+
+
+def peak_critical_quasi_static_torque(candidate_solution):
+    zero_velocity = np.zeros(candidate_solution['v'].shape[0])
+    zero_acceleration = np.zeros(candidate_solution['a'].shape[0])
+    peak = 0.0
+    for node in range(candidate_solution['a'].shape[1]):
+        tau_node = np.asarray(id_fn_cost.call(
+            candidate_solution['q'][:, node],
+            zero_velocity,
+            zero_acceleration,
+        )).flatten()
+        peak = max(
+            peak,
+            float(np.max(np.abs(tau_node[critical_torque_indices]))),
+        )
+    return peak
+
 ti.finalize()
 
-is_colliding = True
-solution_found = False
+best_solution = None
+best_peak_torque = np.inf
 
 # =================================================================================
 # matfile = os.path.join(os.path.dirname(__file__), '../mat_files/weld_concert_very_good.mat')
@@ -436,9 +489,12 @@ attempt_count = 0
 attempt_log = WeldOptAttemptLog()
 print(f"[weld_opt] Attempt log: {attempt_log.path}")
 
-while is_colliding == True or solution_found == False:
+while True:
     attempt_count += 1
-    if (runtime.max_random_initial_pose_attempts > 0
+    if base_search_points is not None and attempt_count > len(base_search_points):
+        break
+    if (base_search_points is None
+            and runtime.max_random_initial_pose_attempts > 0
             and attempt_count > runtime.max_random_initial_pose_attempts):
         attempt_log.write(
             attempt_count,
@@ -450,8 +506,12 @@ while is_colliding == True or solution_found == False:
             f'{runtime.max_random_initial_pose_attempts} attempts.'
         )
 
-    random_pose_x = np.random.uniform(low=bound_initial_pos_x_low, high=bound_initial_pos_x_high, size=1)
-    random_pose_y = np.random.uniform(low=bound_initial_pos_y_low, high=bound_initial_pos_y_high, size=1)
+    if base_search_points is None:
+        random_pose_x = np.random.uniform(low=bound_initial_pos_x_low, high=bound_initial_pos_x_high, size=1)
+        random_pose_y = np.random.uniform(low=bound_initial_pos_y_low, high=bound_initial_pos_y_high, size=1)
+    else:
+        random_pose_x = base_search_points[attempt_count - 1, 0:1]
+        random_pose_y = base_search_points[attempt_count - 1, 1:2]
 
     if point_pub is not None:
         point_pub.add_point(random_pose_x[0], random_pose_y[0], 0.1)
@@ -471,14 +531,13 @@ while is_colliding == True or solution_found == False:
 
     solution_found = ti.bootstrap()
     if not solution_found:
-        is_colliding = True
         attempt_log.write(attempt_count, "bootstrap_failed")
         continue
 
-    solution = ti.solution
+    candidate_solution = ti.solution
 
     pipe_z_current = (
-        float(np.asarray(solution['pipe_z']).reshape(-1)[0])
+        float(np.asarray(candidate_solution['pipe_z']).reshape(-1)[0])
         if OPTIMIZE_PIPE_HEIGHT else float(pos_center_pipe[2])
     )
     pos_center_pipe_current = np.asarray(pos_center_pipe, dtype=float).copy()
@@ -488,7 +547,7 @@ while is_colliding == True or solution_found == False:
     is_colliding = False
     for node in range(ns + 1):
         # print(f"Node {node}:")
-        is_colliding_node, pairs = coll_checker.compute_collisions(solution['q'][:, node])
+        is_colliding_node, pairs = coll_checker.compute_collisions(candidate_solution['q'][:, node])
         # print("Colliding pairs:", pairs)
         if is_colliding_node:
             is_colliding = True
@@ -504,10 +563,38 @@ while is_colliding == True or solution_found == False:
             )
             break
 
-        # print("-----")
+    if is_colliding:
+        continue
 
-    if not is_colliding:
+    if base_search_points is None:
+        solution = candidate_solution
         attempt_log.write(attempt_count, "accepted")
+        break
+
+    peak_torque = peak_critical_quasi_static_torque(candidate_solution)
+    attempt_log.write(attempt_count, "accepted")
+    print(
+        f"[weld_opt] Sobol base {attempt_count}/{len(base_search_points)}: "
+        f"peak critical torque={peak_torque:.3f} Nm"
+    )
+    if peak_torque < best_peak_torque:
+        best_peak_torque = peak_torque
+        best_solution = {
+            name: np.array(value, copy=True)
+            for name, value in candidate_solution.items()
+        }
+
+if base_search_points is not None:
+    if best_solution is None:
+        raise RuntimeError(
+            f'No collision-free solution found for the '
+            f'{len(base_search_points)} Sobol base positions.'
+        )
+    solution = best_solution
+    print(
+        f"[weld_opt] Selected lowest collision-free peak torque: "
+        f"{best_peak_torque:.3f} Nm"
+    )
 
 pipe_z_opt = (
     float(np.asarray(solution['pipe_z']).reshape(-1)[0])

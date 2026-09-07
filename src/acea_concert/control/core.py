@@ -10,8 +10,7 @@ class GapFeedbackController:
         self.dt = float(dt)
         self.max_normal_velocity = float(max_normal_velocity)
         self.max_tangent_velocity = float(max_tangent_velocity)
-        self._previous_normal_error = None
-        self._previous_tangent_error = None
+        self._previous_position = None
 
     def compute(
         self,
@@ -43,9 +42,13 @@ class GapFeedbackController:
         tangent_error = float(
             np.dot(weld_target_base - current_position, tangent_axis))
 
-        normal_error_rate = self._error_rate(
-            normal_error, self._previous_normal_error)
-        self._previous_normal_error = normal_error
+        ee_velocity = np.zeros(3)
+        if self._previous_position is not None:
+            ee_velocity = (
+                current_position - self._previous_position) / self.dt
+        self._previous_position = current_position.copy()
+
+        normal_error_rate = -float(np.dot(ee_velocity, normal_axis))
         normal_velocity = float(np.clip(
             gains['kp_normal'] * normal_error
             + gains['kd_normal'] * normal_error_rate,
@@ -61,9 +64,7 @@ class GapFeedbackController:
         tangent_velocity = 0.0
         tangent_delta = 0.0
         if tangent_correction:
-            tangent_error_rate = self._error_rate(
-                tangent_error, self._previous_tangent_error)
-            self._previous_tangent_error = tangent_error
+            tangent_error_rate = -float(np.dot(ee_velocity, tangent_axis))
             tangent_velocity = float(np.clip(
                 gains['kp_tangent_x'] * tangent_error
                 + gains['kd_tangent_x'] * tangent_error_rate,
@@ -93,11 +94,6 @@ class GapFeedbackController:
             'tangent/correction_velocity_mps': tangent_velocity,
         }
         return corrected_position, corrected_rotation, metrics
-
-    def _error_rate(self, error, previous_error):
-        if previous_error is None:
-            return 0.0
-        return (error - previous_error) / self.dt
 
 
 def rotation_error_angle(target_rotation, current_rotation):

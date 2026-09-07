@@ -61,6 +61,36 @@ def main():
     assert metrics['tangent/correction_m'] == 0.0
     assert rotation_error_angle(np.eye(3), np.eye(3)) == 0.0
 
+    derivative_gains = {
+        'kp_normal': 0.0,
+        'kd_normal': 2.0,
+        'kp_tangent_x': 0.0,
+        'kd_tangent_x': 2.0,
+    }
+    _, _, metrics = controller.compute(
+        postural_position=np.zeros(3),
+        current_position=np.zeros(3),
+        weld_position_gap=np.array([1.0, 1.0, 0.0]),
+        weld_rotation_gap=np.eye(3),
+        gap_origin_base=np.array([0.0, 1.0, 0.0]),
+        gap_rotation_base=np.eye(3),
+        gains=derivative_gains,
+        tangent_correction=False,
+    )
+    assert metrics['normal/correction_velocity_mps'] == 0.0
+
+    _, _, metrics = controller.compute(
+        postural_position=np.zeros(3),
+        current_position=np.array([0.0, 0.01, 0.0]),
+        weld_position_gap=np.array([1.0, 1.0, 0.0]),
+        weld_rotation_gap=np.eye(3),
+        gap_origin_base=np.array([0.0, 1.0, 0.0]),
+        gap_rotation_base=np.eye(3),
+        gains=derivative_gains,
+        tangent_correction=False,
+    )
+    assert np.isclose(metrics['normal/correction_velocity_mps'], -0.2)
+
 
 if __name__ == "__main__":
     main()

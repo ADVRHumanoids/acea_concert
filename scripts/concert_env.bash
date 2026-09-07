@@ -99,6 +99,11 @@ concert_sim() {
     ros2 launch acea_concert weld_sim.launch.py "${args[@]}"
 }
 
+concert_sim_perception() {
+    concert_ws || return
+    ros2 launch acea_concert weld_sim_perception.launch.py "$@"
+}
+
 concert_xbot_gui() {
     if command -v xbot2_gui >/dev/null 2>&1; then
         xbot2_gui "$@"
@@ -114,6 +119,21 @@ concert_xbot_gui() {
 
 concert_gap() {
     _concert_python_script gap_pose_publisher.py "$@"
+}
+
+concert_gap_perception() {
+    concert_ws || return
+    ros2 launch acea_concert detection_v16_dev.launch.py \
+        use_sim_time:=true \
+        camera_preset:=sim \
+        sim_camera_name:=camera_F \
+        mat_file:="${ACEA_CONCERT_DIR}/mat_files/weld_concert.mat" \
+        pipe_radius_m:=auto \
+        "$@"
+}
+
+concert_gap_hz() {
+    ros2 topic hz /gap/pose_robot "$@"
 }
 
 concert_gravity() {
@@ -159,8 +179,11 @@ concert_help() {
 CONCERT commands:
   concert_sim [args...]   ros2 launch acea_concert weld_sim.launch.py
     alias: concert_sim --optimize_pose -> optimized_robot_pose:=true
+  concert_sim_perception  ros2 launch acea_concert weld_sim_perception.launch.py
   concert_xbot_gui        start XBot GUI/server
-  concert_gap             publish /gap/pose_robot from Gazebo ground truth
+  concert_gap_perception  publish /gap/pose_robot from V16 perception
+  concert_gap             publish optional Gazebo ground-truth gap pose
+  concert_gap_hz          monitor /gap/pose_robot frequency
   concert_gravity         run gravity compensation
   concert_optimize_weld   compute and save the optimized weld trajectory
   concert_weld_rviz       open the weld-optimization RViz config
@@ -174,7 +197,7 @@ CONCERT commands:
 Typical order:
   concert_sim
   concert_xbot_gui
-  concert_gap
+  concert_gap_perception
   concert_gravity
   concert_home
   concert_drive

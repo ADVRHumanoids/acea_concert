@@ -123,11 +123,7 @@ class ControllerRosInterface:
         for param_name, default_value in self._gain_defaults.items():
             self.node.declare_parameter(param_name, default_value)
 
-        self._gap_origin_base: np.ndarray | None = None
-        self._gap_x_axis_base: np.ndarray | None = None
-        self._gap_y_axis_base: np.ndarray | None = None
-        self._gap_z_axis_base: np.ndarray | None = None
-        self._last_gap_pose_time: float | None = None
+        self._gap_pose = None
 
         self.node.create_subscription(
             PoseStamped, '/gap/pose_robot', self._on_gap_pose_robot, 10)
@@ -143,38 +139,12 @@ class ControllerRosInterface:
             target=rclpy.spin, args=(self.node,), daemon=True)
         self._ros_thread.start()
 
-    @property
-    def gap_origin_base(self) -> np.ndarray | None:
-        if self._gap_origin_base is None:
+    def gap_pose(self):
+        snapshot = self._gap_pose
+        if snapshot is None:
             return None
-        return self._gap_origin_base.copy()
-
-    @property
-    def gap_y_axis_base(self) -> np.ndarray | None:
-        if self._gap_y_axis_base is None:
-            return None
-        return self._gap_y_axis_base.copy()
-
-    @property
-    def gap_axes_base(self) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-        if (self._gap_x_axis_base is None
-                or self._gap_y_axis_base is None
-                or self._gap_z_axis_base is None):
-            return None
-        return (
-            self._gap_x_axis_base.copy(),
-            self._gap_y_axis_base.copy(),
-            self._gap_z_axis_base.copy(),
-        )
-
-    def gap_pose_age_s(self) -> float | None:
-        if self._last_gap_pose_time is None:
-            return None
-        return monotonic() - self._last_gap_pose_time
-
-    def gap_pose_is_fresh(self, timeout_s: float) -> bool:
-        age = self.gap_pose_age_s()
-        return age is not None and age <= timeout_s
+        origin, rotation, timestamp = snapshot
+        return origin.copy(), rotation.copy(), monotonic() - timestamp
 
     def controller_gains(self) -> dict[str, float]:
         return {
@@ -229,20 +199,10 @@ class ControllerRosInterface:
         ], dtype=float)
         base_R_gap = R.from_quat(q / norm).as_matrix()
         now_s = monotonic()
-        gap_origin_base, base_R_gap = self._gap_pose_filter.update(
+        gap_origin_base, base_R_gap, accepted = self._gap_pose_filter.update(
             gap_origin_base, base_R_gap, now_s)
-
-        self._gap_origin_base = gap_origin_base
-        self._gap_x_axis_base = self._unit_axis(base_R_gap[:, 0])
-        self._gap_y_axis_base = self._unit_axis(base_R_gap[:, 1])
-        self._gap_z_axis_base = self._unit_axis(base_R_gap[:, 2])
-        self._last_gap_pose_time = now_s
-
-    def _unit_axis(self, axis: np.ndarray) -> np.ndarray | None:
-        norm = np.linalg.norm(axis)
-        if norm > 1e-9:
-            return axis / norm
-        return None
+        if accepted:
+            self._gap_pose = (gap_origin_base, base_R_gap, now_s)
 
     def _publish_pose(self, pub, affine, frame_id: str):
         msg = PoseStamped()

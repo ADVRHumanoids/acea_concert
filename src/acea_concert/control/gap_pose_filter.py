@@ -49,19 +49,20 @@ class GapPoseLowPass:
         return self._rejected_samples
 
     def update(self, xyz: np.ndarray, rotation_matrix: np.ndarray,
-               time_s: float) -> tuple[np.ndarray, np.ndarray]:
+               time_s: float) -> tuple[np.ndarray, np.ndarray, bool]:
         xyz = np.asarray(xyz, dtype=float)
         rot = R.from_matrix(np.asarray(rotation_matrix, dtype=float))
         time_s = float(time_s)
 
         if not self.enabled:
             self._set_state(xyz, rot, time_s)
-            return xyz.copy(), rot.as_matrix()
+            return xyz.copy(), rot.as_matrix(), True
 
         if self._is_outlier(xyz, rot):
             self._rejected_samples += 1
             self._last_time_s = time_s
-            return self._xyz.copy(), self._rot.as_matrix()
+            xyz, rotation = self._current()
+            return xyz, rotation, False
 
         self._history_xyz.append(xyz.copy())
         self._history_rot.append(rot)
@@ -70,7 +71,8 @@ class GapPoseLowPass:
         target_xyz, target_rot = self._history_estimate()
         if self._xyz is None or self._rot is None or self._last_time_s is None:
             self._set_state(target_xyz, target_rot, time_s)
-            return self._current()
+            xyz, rotation = self._current()
+            return xyz, rotation, True
 
         dt = max(0.0, time_s - self._last_time_s)
         if self._tau_s > 0.0 and dt > 0.0:
@@ -82,7 +84,8 @@ class GapPoseLowPass:
             self._xyz = target_xyz.copy()
             self._rot = target_rot
         self._last_time_s = time_s
-        return self._current()
+        xyz, rotation = self._current()
+        return xyz, rotation, True
 
     def _set_state(self, xyz: np.ndarray, rot: R, time_s: float):
         self._xyz = xyz.copy()
@@ -122,13 +125,13 @@ class GapPoseLowPass:
 def _self_check():
     filt = GapPoseLowPass(tau_s=1.0)
     eye = np.eye(3)
-    xyz0, _ = filt.update(np.array([0.0, 0.0, 0.0]), eye, 0.0)
-    xyz1, _ = filt.update(np.array([2.0, 0.0, 0.0]), eye, 1.0)
+    xyz0, _, _ = filt.update(np.array([0.0, 0.0, 0.0]), eye, 0.0)
+    xyz1, _, _ = filt.update(np.array([2.0, 0.0, 0.0]), eye, 1.0)
     assert np.allclose(xyz0, [0.0, 0.0, 0.0])
     assert np.allclose(xyz1, [1.0, 0.0, 0.0])
 
     target = R.from_euler("z", 90.0, degrees=True).as_matrix()
-    _, rot = filt.update(np.array([2.0, 0.0, 0.0]), target, 2.0)
+    _, rot, _ = filt.update(np.array([2.0, 0.0, 0.0]), target, 2.0)
     yaw = R.from_matrix(rot).as_euler("zyx", degrees=True)[0]
     assert 40.0 < yaw < 50.0
 
@@ -138,20 +141,21 @@ def _self_check():
         max_position_jump_m=0.5,
     )
     filt.update(np.array([0.0, 0.0, 0.0]), eye, 0.0)
-    xyz, _ = filt.update(np.array([0.1, 0.0, 0.0]), eye, 0.1)
+    xyz, _, _ = filt.update(np.array([0.1, 0.0, 0.0]), eye, 0.1)
     assert np.allclose(xyz, [0.05, 0.0, 0.0])
-    xyz, _ = filt.update(np.array([10.0, 0.0, 0.0]), eye, 0.2)
+    xyz, _, _ = filt.update(np.array([10.0, 0.0, 0.0]), eye, 0.2)
     assert np.allclose(xyz, [0.1, 0.0, 0.0])
-    xyz, _ = filt.update(np.array([10.0, 0.0, 0.0]), eye, 0.3)
+    xyz, _, accepted = filt.update(np.array([10.0, 0.0, 0.0]), eye, 0.3)
     assert np.allclose(xyz, [0.1, 0.0, 0.0])
+    assert not accepted
     assert filt.rejected_samples == 1
 
     filt = GapPoseLowPass(history_size=5, max_position_jump_m=0.5)
     filt.update(np.array([10.0, 0.0, 0.0]), eye, 0.0)
     filt.update(np.array([0.0, 0.0, 0.0]), eye, 0.1)
-    xyz, _ = filt.update(np.array([0.1, 0.0, 0.0]), eye, 0.2)
+    xyz, _, _ = filt.update(np.array([0.1, 0.0, 0.0]), eye, 0.2)
     assert np.allclose(xyz, [0.1, 0.0, 0.0])
-    xyz, _ = filt.update(np.array([10.0, 0.0, 0.0]), eye, 0.3)
+    xyz, _, _ = filt.update(np.array([10.0, 0.0, 0.0]), eye, 0.3)
     assert np.allclose(xyz, [0.1, 0.0, 0.0])
     assert filt.rejected_samples == 1
 

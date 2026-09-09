@@ -297,8 +297,12 @@ input("[controller] Press Enter to start the control loop.")
 while True:
     t0 = perf_counter()
 
-    gap_pose_age_s = controller_ros.gap_pose_age_s()
-    gap_pose_fresh = controller_ros.gap_pose_is_fresh(args.gap_pose_timeout)
+    gap_pose = None if args.open_loop else controller_ros.gap_pose()
+    gap_pose_age_s = None if gap_pose is None else gap_pose[2]
+    gap_pose_fresh = (
+        gap_pose_age_s is not None
+        and gap_pose_age_s <= args.gap_pose_timeout
+    )
     should_pause_for_gap = (
         not args.open_loop
         and (
@@ -364,11 +368,8 @@ while True:
             'tangent/correction_velocity_mps': 0.0,
         }
     else:
-        gap_origin_base = controller_ros.gap_origin_base
-        gap_axes_base = controller_ros.gap_axes_base
-        gap_x_axis_base, gap_y_axis_base, gap_z_axis_base = gap_axes_base
-        base_R_gap = np.column_stack(
-            [gap_x_axis_base, gap_y_axis_base, gap_z_axis_base])
+        gap_origin_base, base_R_gap, _ = gap_pose
+        gap_y_axis_base = base_R_gap[:, 1]
         gains = controller_ros.controller_gains()
         corrected_position, corrected_rotation, metrics = (
             feedback_controller.compute(

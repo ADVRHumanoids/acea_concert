@@ -29,6 +29,7 @@ def main():
             'kd_tangent_x': 0.0,
         },
         tangent_correction=True,
+        measurement_dt=0.0,
     )
     assert np.allclose(zero_position, np.zeros(3))
     assert zero_metrics['normal/error_m'] == 0.0
@@ -53,6 +54,7 @@ def main():
             'kd_tangent_x': 0.0,
         },
         tangent_correction=False,
+        measurement_dt=0.0,
     )
 
     assert np.allclose(position, [0.0, 0.05, 0.0])
@@ -76,6 +78,7 @@ def main():
         gap_rotation_base=np.eye(3),
         gains=derivative_gains,
         tangent_correction=False,
+        measurement_dt=0.0,
     )
     assert metrics['normal/correction_velocity_mps'] == 0.0
 
@@ -88,8 +91,22 @@ def main():
         gap_rotation_base=np.eye(3),
         gains=derivative_gains,
         tangent_correction=False,
+        measurement_dt=0.05,
     )
-    assert np.isclose(metrics['normal/correction_velocity_mps'], -0.2)
+    assert np.isclose(metrics['normal/correction_velocity_mps'], -0.4)
+
+    _, _, metrics = controller.compute(
+        postural_position=np.zeros(3),
+        current_position=np.array([0.0, 0.01, 0.0]),
+        weld_position_gap=np.array([1.01, 1.0, 0.0]),
+        weld_rotation_gap=np.eye(3),
+        gap_origin_base=np.array([0.0, 1.0, 0.0]),
+        gap_rotation_base=np.eye(3),
+        gains=derivative_gains,
+        tangent_correction=True,
+        measurement_dt=0.1,
+    )
+    assert np.isclose(metrics['tangent/correction_velocity_mps'], 0.2)
 
 
 if __name__ == "__main__":

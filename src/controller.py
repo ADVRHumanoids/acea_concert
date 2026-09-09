@@ -291,6 +291,7 @@ if args.open_loop:
 
 # ── Control loop ──────────────────────────────────────────────────────────────
 t = 0.0
+feedback_time = None
 gap_pose_paused = False
 input("[controller] Press Enter to start the control loop.")
 while True:
@@ -306,6 +307,7 @@ while True:
         )
     )
     if should_pause_for_gap:
+        feedback_time = None
         if not gap_pose_paused:
             age_text = (
                 "never received"
@@ -324,6 +326,8 @@ while True:
 
     # Slow down the trajectory by scaling time
     t_traj = t / TRAJ_SLOWDOWN
+    measurement_dt = 0.0 if feedback_time is None else t0 - feedback_time
+    feedback_time = t0
 
     # ── Update postural reference from mat trajectory (slowdown applied) ─
     postural_map = {
@@ -376,6 +380,7 @@ while True:
                 gap_rotation_base=base_R_gap,
                 gains=gains,
                 tangent_correction=args.tangent_correction,
+                measurement_dt=measurement_dt,
             )
         )
         ee_pose_des_mod.translation = corrected_position

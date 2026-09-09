@@ -11,6 +11,7 @@ class GapFeedbackController:
         self.max_normal_velocity = float(max_normal_velocity)
         self.max_tangent_velocity = float(max_tangent_velocity)
         self._previous_position = None
+        self._previous_weld_position_gap = None
 
     def compute(
         self,
@@ -23,6 +24,7 @@ class GapFeedbackController:
         gap_rotation_base,
         gains,
         tangent_correction,
+        measurement_dt,
     ):
         """Return corrected position, rotation, and diagnostic metrics."""
         postural_position = np.asarray(postural_position, dtype=float)
@@ -32,9 +34,10 @@ class GapFeedbackController:
 
         tangent_axis = gap_rotation_base[:, 0]
         normal_axis = gap_rotation_base[:, 1]
+        weld_position_gap = np.asarray(weld_position_gap, dtype=float)
         weld_target_base = (
             gap_origin_base
-            + gap_rotation_base @ np.asarray(weld_position_gap, dtype=float)
+            + gap_rotation_base @ weld_position_gap
         )
 
         normal_error = float(
@@ -42,13 +45,21 @@ class GapFeedbackController:
         tangent_error = float(
             np.dot(weld_target_base - current_position, tangent_axis))
 
-        ee_velocity = np.zeros(3)
-        if self._previous_position is not None:
+        relative_velocity = np.zeros(3)
+        if (self._previous_position is not None
+                and self._previous_weld_position_gap is not None
+                and measurement_dt > 0.0):
             ee_velocity = (
-                current_position - self._previous_position) / self.dt
+                current_position - self._previous_position) / measurement_dt
+            target_velocity = gap_rotation_base @ (
+                (weld_position_gap - self._previous_weld_position_gap)
+                / measurement_dt
+            )
+            relative_velocity = target_velocity - ee_velocity
         self._previous_position = current_position.copy()
+        self._previous_weld_position_gap = weld_position_gap.copy()
 
-        normal_error_rate = -float(np.dot(ee_velocity, normal_axis))
+        normal_error_rate = float(np.dot(relative_velocity, normal_axis))
         normal_velocity = float(np.clip(
             gains['kp_normal'] * normal_error
             + gains['kd_normal'] * normal_error_rate,
@@ -64,7 +75,7 @@ class GapFeedbackController:
         tangent_velocity = 0.0
         tangent_delta = 0.0
         if tangent_correction:
-            tangent_error_rate = -float(np.dot(ee_velocity, tangent_axis))
+            tangent_error_rate = float(np.dot(relative_velocity, tangent_axis))
             tangent_velocity = float(np.clip(
                 gains['kp_tangent_x'] * tangent_error
                 + gains['kd_tangent_x'] * tangent_error_rate,

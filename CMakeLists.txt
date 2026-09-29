@@ -28,7 +28,7 @@ install(DIRECTORY src/acea_concert/
   FILES_MATCHING PATTERN "*.py"
 )
 
-# --- ACEA perception detection module (validated V16 line) ---
+# --- ACEA perception detection module (V16 line and VC1 detector) ---
 # Publishes /gap/pose_robot (base_link) as a drop-in replacement for the
 # Gazebo ground-truth gap_pose_publisher.py. acea_alignment/ is installed next
 # to the nodes so their `from acea_alignment...` imports resolve via ros2 run.
@@ -38,6 +38,8 @@ install(PROGRAMS
   src/detection/acea_seam_detector_v15.py
   src/detection/acea_detection_runtime.py
   src/detection/gap_pose_robot_node_v14_dev.py
+  src/detection/acea_junction_vc1_node.py
+  src/detection/acea_junction_vc1.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

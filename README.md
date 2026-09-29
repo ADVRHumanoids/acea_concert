@@ -252,24 +252,10 @@ must be `[292.055, 0, 243.060] mm`, placing the camera above the holder as in
 the CAD model. For the prismatic robot, replace `end_effector_E` with
 `end_effector_F` in the `tf2_echo` command.
 
-After homing, launch perception in another sourced terminal:
+After homing, start perception (section 3) in another sourced terminal:
 
 ```bash
-cd /home/user/concert_ws/src/acea_concert
-source scripts/concert_env.bash
-
-ros2 launch acea_concert detection_v16_dev.launch.py \
-  use_sim_time:=true \
-  camera_preset:=sim \
-  sim_camera_name:=camera_F \
-  mat_file:=/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat \
-  pipe_radius_m:=auto
-```
-
-Check the detector and controller-facing pose:
-
-```bash
-ros2 topic echo /acea/pipe_junction/status --once --field data
+ros2 launch acea_concert detection_vc1.launch.py sim:=true
 ros2 topic echo /gap/pose_robot --once
 ```
 
@@ -508,55 +494,15 @@ base_R_ee_des = base_R_gap * gap_R_ee_des
 - CartesIO
 - NumPy, SciPy, Matplotlib
 
-## 3. Camera-Based Gap Perception (validated detector)
+## 3. Camera-Based Gap Perception (VC1)
 
-The `src/detection/` module replaces the Gazebo ground-truth
-`gap_pose_publisher.py` with a real camera-based pipe-junction detector. It
-publishes the same interface: `/gap/pose_robot` (`geometry_msgs/PoseStamped`,
-frame `base_link`, y = pipe axis, x = radial, z = x cross y), so
-`drive_base_to_weld_pose.py` and the controller consume it unchanged.
-
-Validated results (2026-07-19, idle host):
-
-- real-camera cloth/support bag: 1463/1463 required frames valid, zero
-  stale/hidden/unsafe poses;
-- full live simulation cycle (Gazebo + XBot2 + homing + 65 s trajectory):
-  354/354 frames accepted, position error median 1.15 mm / p95 6.4 mm,
-  orientation p95 0.30 deg, zero axis flips;
-- output rate ~4.4 Hz in live simulation, ~7 Hz on real camera frames
-  (single-thread CPU-bound; the controller was validated at these rates). The
-  detector never publishes a predicted or held pose: silent frames are
-  fail-closed by contract.
-
-### Run the detector standalone with your own trajectory
-
-Terminal A (simulation, or skip on the real robot):
+`detection_vc1.launch.py` publishes the measured junction pose on
+`/gap/pose_robot` (`base_link`, same interface as `gap_pose_publisher.py`): run
+one or the other, not both.
 
 ```bash
-
-source /home/user/env/bin/activate
-source /opt/ros/jazzy/setup.bash
-source install/setup.bash
-source setup.bash
-source /opt/xbot/setup.sh
-
-ros2 launch acea_concert weld_sim_perception.launch.py \
-  mat_file:=/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat \
-  optimized_robot_pose:=true
+ros2 launch acea_concert detection_vc1.launch.py             # robot, camera_E
+ros2 launch acea_concert detection_vc1.launch.py sim:=true   # simulation, camera_F
 ```
 
-Terminal B (detector + pose bridge; use `camera_preset:=real` on the robot —
-the simulation preset and its recovery paths are NOT loaded on real):
-
-```bash
-ros2 launch acea_concert detection_v16_dev.launch.py \
-  use_sim_time:=true camera_preset:=sim sim_camera_name:=camera_F \
-  mat_file:=/home/user/concert_ws/src/acea_concert/mat_files/weld_concert.mat \
-  pipe_radius_m:=auto
-```
-
-Then run homing / base drive / controller exactly as in section 2; the
-controller reads `/gap/pose_robot` from the detector instead of the ground
-truth publisher. Do not run `gap_pose_publisher.py` at the same time on the
-same topic (remap it to `/acea/ground_truth/gap_pose_robot` if you want the
-comparison).
+The previous V16 detector is still available as `detection_v16_dev.launch.py`.

@@ -34,7 +34,7 @@ fi
 
 echo "[start_xbot2_after_clock] waiting for an active Gazebo /clock"
 timeout --signal=TERM "${timeout_seconds}" \
-    ros2 topic echo /clock --once >/dev/null
+    ros2 topic echo /clock rosgraph_msgs/msg/Clock --once >/dev/null
 sleep "${settle_seconds}"
 
 echo "[start_xbot2_after_clock] clock active; starting xbot2-core"
@@ -67,13 +67,21 @@ for ((attempt = 1; attempt <= max_attempts; ++attempt)); do
             fi
             set +e
             response="$(
-                timeout 2 ros2 service call /xbotcore/ros_ctrl/switch \
+                timeout 10 ros2 service call /xbotcore/ros_ctrl/switch \
                     std_srvs/srv/SetBool "{data: true}" 2>&1
             )"
             service_rc=$?
+            # A switch reply lost to the timeout, or ros_ctrl started by another
+            # node, leaves it Running while every later switch answers
+            # success=False: its state decides too.
+            state="$(
+                timeout 10 ros2 service call /xbotcore/ros_ctrl/state \
+                    xbot_msgs/srv/PluginStatus 2>&1
+            )"
             set -e
-            if [[ "${service_rc}" -eq 0 ]] \
-                && grep -Eq 'success=True|success: true' <<<"${response}"; then
+            if { [[ "${service_rc}" -eq 0 ]] \
+                && grep -Eq 'success=True|success: true' <<<"${response}"; } \
+                || grep -q "status='Running'" <<<"${state}"; then
                 echo "[start_xbot2_after_clock] ros_ctrl running"
                 ros_ctrl_started=true
                 break

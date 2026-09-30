@@ -480,13 +480,34 @@ class VC1Node(Node):
         return out
 
 
+def spin(node: Node) -> None:
+    """``rclpy.spin``; with simulated time, on rclpy's events executor.
+
+    Gazebo publishes /clock at the physics rate (1 kHz).  The default executor
+    rebuilds its wait set in Python for every clock message and holds the GIL
+    about 65 % of the time, so the detector thread runs at less than half speed.
+    The events executor handles those wake-ups in C++.
+    """
+    if node.get_parameter("use_sim_time").value:
+        try:
+            from rclpy.experimental.events_executor import EventsExecutor
+        except ImportError:        # rclpy without it: default executor
+            pass
+        else:
+            executor = EventsExecutor()
+            executor.add_node(node)
+            executor.spin()
+            return
+    rclpy.spin(node)
+
+
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = None
     code = 0
     try:
         node = VC1Node()
-        rclpy.spin(node)
+        spin(node)
     except DuplicateInstanceError as exc:
         print(f"[acea_junction_vc1_node] refusing to start: {exc}", file=sys.stderr)
         code = 2
